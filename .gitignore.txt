@@ -1,0 +1,26 @@
+# Secret credentials - NEVER commit these
+.env
+token.json
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Database
+data/trading.db
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

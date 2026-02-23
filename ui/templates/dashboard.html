@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PRIMA Trading Dashboard</title>
+  <style>
+    body { background-color: #121212; color: #f5f5f5; font-family: Arial, sans-serif; }
+    h1, h2 { color: #ffffff; }
+    .card { background-color: #1e1e1e; padding: 16px; margin: 10px 0; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { padding: 8px; border-bottom: 1px solid #333; text-align: left; }
+    .green { color: #4caf50; }
+    .red { color: #f44336; }
+  </style>
+</head>
+<body>
+  <h1>PRIMA Trading Dashboard</h1>
+
+  <div class="card">
+    <h2>Portfolio</h2>
+    <p>Equity: <strong>{{ equity | round(2) }}</strong></p>
+    <p>Cash: <strong>{{ cash | round(2) }}</strong></p>
+    <p>Realized P&L:
+      <strong class="{{ 'green' if total_realized >= 0 else 'red' }}">
+        {{ total_realized | round(2) }}
+      </strong>
+    </p>
+    <p>Unrealized P&L:
+      <strong class="{{ 'green' if total_unrealized >= 0 else 'red' }}">
+        {{ total_unrealized | round(2) }}
+      </strong>
+    </p>
+    <p>Win rate: <strong>{{ win_rate | round(1) }}%</strong></p>
+  </div>
+
+  <div class="card">
+    <h2>Open Positions</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Qty</th>
+          <th>Avg Price</th>
+          <th>Unrealized P&L</th>
+          <th>Realized P&L</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in positions %}
+        <tr>
+          <td>{{ p.symbol }}</td>
+          <td>{{ p.quantity }}</td>
+          <td>{{ p.avg_price | round(2) }}</td>
+          <td class="{{ 'green' if p.unrealized_pnl >= 0 else 'red' }}">
+            {{ p.unrealized_pnl | round(2) }}
+          </td>
+          <td class="{{ 'green' if p.realized_pnl >= 0 else 'red' }}">
+            {{ p.realized_pnl | round(2) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Recent Trades</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>Symbol</th>
+          <th>Side</th>
+          <th>Qty</th>
+          <th>Price</th>
+          <th>P&L</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in trades %}
+        <tr>
+          <td>{{ t.timestamp }}</td>
+          <td>{{ t.symbol }}</td>
+          <td>{{ t.side }}</td>
+          <td>{{ t.quantity }}</td>
+          <td>{{ t.price | round(2) }}</td>
+          <td class="{{ 'green' if t.pnl >= 0 else 'red' }}">
+            {{ t.pnl | round(2) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    setTimeout(function() {
+      window.location.reload();
+    }, 2000);
+  </script>
+</body>
+</html>
