@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from math import floor
 
 import pandas as pd
-from kiteconnect import KiteConnect
+from dhanhq import dhanhq
 
 from config import settings
 from strategies.swing_trend_pullback import SwingTrendPullbackStrategy
@@ -20,7 +20,7 @@ from utils.notification_service import NotificationService
 class SwingEngine:
     def __init__(
         self,
-        kite: KiteConnect,
+        dhan: dhanhq,
         trading_engine: PaperTradingEngine,
         symbols: List[str],
         notifier: Optional[NotificationService] = None,
@@ -28,8 +28,8 @@ class SwingEngine:
         """
         Parameters
         ----------
-        kite : KiteConnect
-            Authenticated KiteConnect client.
+        dhan : dhanhq
+            Authenticated dhan client.
         trading_engine : PaperTradingEngine
             Shared paper trading engine instance (uses common cash ledger).
         symbols : list[str]
@@ -37,30 +37,51 @@ class SwingEngine:
         notifier : NotificationService or None
             For sending pre-trade alerts (Telegram, later WhatsApp).
         """
-        self.kite = kite
+        self.dhan = dhan
         self.engine = trading_engine
         self.symbols = symbols
         self.strategy = SwingTrendPullbackStrategy()
         self.notifier = notifier
+        from utils.dhan_helper import dhan_helper
+        self.dhan_helper = dhan_helper
 
     def fetch_daily_ohlc(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Fetch daily OHLCV data for swing analysis."""
+        """Fetch daily OHLCV data for swing analysis using Dhan."""
         to_dt = datetime.now()
         from_dt = to_dt - timedelta(days=180)  # ~6 months of history
 
         try:
-            q = self.kite.quote(f"NSE:{symbol}")
-            token = q[f"NSE:{symbol}"]["instrument_token"]
+            from utils.rate_limiter import retry_with_backoff
+            sec_id = self.dhan_helper.get_security_id(symbol)
+            if not sec_id:
+                return pd.DataFrame()
 
-            data = self.kite.historical_data(
-                instrument_token=token,
-                from_date=from_dt,
-                to_date=to_dt,
-                interval="day",
-                continuous=False,
-                oi=False,
-            )
-            return pd.DataFrame(data) if data else pd.DataFrame()
+            @retry_with_backoff(retries=3)
+            def _fetch():
+                return self.dhan.historical_daily_data(
+                    symbol=sec_id,
+                    exchange_segment='NSE_EQ',
+                    instrument_type='EQUITY',
+                    expiry_code=0,
+                    from_date=from_dt.strftime('%Y-%m-%d'),
+                    to_date=to_dt.strftime('%Y-%m-%d')
+                )
+
+            data = _fetch()
+
+            if data and data.get('data'):
+                df = pd.DataFrame(data['data'])
+                # Need standardized column names
+                df.rename(columns={
+                    'open': 'open',
+                    'high': 'high',
+                    'low': 'low',
+                    'close': 'close',
+                    'volume': 'volume',
+                    'start_Time': 'timestamp'
+                }, inplace=True)
+                return df
+            return pd.DataFrame()
         except Exception as e:
             print(f"[SWING] Error fetching daily data for {symbol}: {e}")
             return None
@@ -171,6 +192,9 @@ class SwingEngine:
                     quantity=qty,
                     price=entry,
                     segment=settings.SEGMENT_SWING,
+                    order_type="FOREVER", # Or OCO, to signify swing
+                    stop_loss=stop,
+                    take_profit=target
                 )
                 if trade is None:
                     print(f"[SWING] {symbol}: trade blocked by risk/margin engine")

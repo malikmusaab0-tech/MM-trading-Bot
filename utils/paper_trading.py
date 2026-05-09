@@ -8,11 +8,11 @@ class PaperTradingEngine:
     Paper trading engine with MIS intraday margin support.
     - cash = actual capital (e.g. Rs 1,00,000)
     - MIS limit = cash x INTRADAY_MARGIN_MULTIPLIER
-    - kite: optional KiteConnect instance for live LTP in dashboard.
+    - dhan: optional dhanhq instance for live LTP in dashboard.
     """
 
-    def __init__(self, kite=None):
-        self.kite = kite
+    def __init__(self, dhan=None):
+        self.dhan = dhan
         self.cash = float(settings.INITIAL_CAPITAL)
         self._load_existing_state()
 
@@ -63,7 +63,7 @@ class PaperTradingEngine:
     # Swing/long-term will pass SEGMENT_SWING / SEGMENT_LONGTERM explicitly.
     # ------------------------------------------------------------------ #
 
-    def buy(self, symbol, quantity, price, segment=None):
+    def buy(self, symbol, quantity, price, segment=None, order_type="REGULAR", stop_loss=None, take_profit=None):
         seg = segment or settings.SEGMENT_INTRADAY
         trade_value = quantity * price
         with get_session() as session:
@@ -102,6 +102,9 @@ class PaperTradingEngine:
                 paper=True,
                 timestamp=datetime.utcnow(),
                 segment=seg,
+                order_type=order_type,
+                stop_loss=stop_loss,
+                take_profit=take_profit
             )
             session.add(trade)
             session.add(
@@ -117,7 +120,7 @@ class PaperTradingEngine:
             )
             return trade
 
-    def sell(self, symbol, quantity, price, segment=None):
+    def sell(self, symbol, quantity, price, segment=None, order_type="REGULAR"):
         seg = segment or settings.SEGMENT_INTRADAY
         with get_session() as session:
             pos = self._get_pos(session, symbol)
@@ -139,6 +142,7 @@ class PaperTradingEngine:
                 paper=True,
                 timestamp=datetime.utcnow(),
                 segment=seg,
+                order_type=order_type,
             )
             session.add(trade)
             session.add(
@@ -154,7 +158,7 @@ class PaperTradingEngine:
             )
             return trade
 
-    def short(self, symbol, quantity, price, segment=None):
+    def short(self, symbol, quantity, price, segment=None, order_type="REGULAR", stop_loss=None, take_profit=None):
         seg = segment or settings.SEGMENT_INTRADAY
         trade_value = quantity * price
         with get_session() as session:
@@ -194,6 +198,9 @@ class PaperTradingEngine:
                 paper=True,
                 timestamp=datetime.utcnow(),
                 segment=seg,
+                order_type=order_type,
+                stop_loss=stop_loss,
+                take_profit=take_profit
             )
             session.add(trade)
             session.add(
@@ -209,7 +216,7 @@ class PaperTradingEngine:
             )
             return trade
 
-    def cover(self, symbol, quantity, price, segment=None):
+    def cover(self, symbol, quantity, price, segment=None, order_type="REGULAR"):
         seg = segment or settings.SEGMENT_INTRADAY
         with get_session() as session:
             pos = self._get_pos(session, symbol)
@@ -231,6 +238,7 @@ class PaperTradingEngine:
                 paper=True,
                 timestamp=datetime.utcnow(),
                 segment=seg,
+                order_type=order_type,
             )
             session.add(trade)
             session.add(

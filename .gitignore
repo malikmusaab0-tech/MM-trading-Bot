@@ -1,2 +1,5 @@
 logs/ 
 *.db 
+data/api-scrip-master.csv
+api-scrip-master.csv
+*.csv

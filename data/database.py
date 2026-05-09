@@ -3,13 +3,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
-from config.settings import DATABASE_PATH, SEGMENT_INTRADAY
+from config.settings import DATABASE_PATH, SEGMENT_INTRADAY, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
 
-DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
+DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
     echo=False,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -29,6 +28,9 @@ class Trade(Base):
     paper = Column(Boolean, default=True)
     # New: which segment created this trade (INTRADAY / SWING / LONGTERM)
     segment = Column(String, default=SEGMENT_INTRADAY, index=True)
+    order_type = Column(String, nullable=True) # REGULAR, BRACKET, FOREVER
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
 
 
 class Position(Base):

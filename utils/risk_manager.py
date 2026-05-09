@@ -19,30 +19,12 @@ class MarginCache:
     """
     Loads per-symbol margin rates once per session.
     Primary : NSE VaR+ELM daily file (no broker auth needed).
-    Override : Pass a loaded kite client to use Kite margins API instead.
     Fallback : Conservative 1x (100% margin) for any symbol not found.
     """
 
-    def __init__(self, kite_client=None):
-        self._kite = kite_client
+    def __init__(self):
         self._cache: Dict[str, float] = {}    # symbol -> margin rate (0.0–1.0)
         self._loaded_date: Optional[date] = None
-
-    def _load_from_kite(self) -> bool:
-        try:
-            data = self._kite.margins("equity")
-            for item in data:
-                sym  = str(item.get("tradingsymbol", "")).upper()
-                var  = float(item.get("var", 0)) / 100.0
-                elm  = float(item.get("elm", 0)) / 100.0
-                rate = var + elm
-                if sym and rate > 0:
-                    self._cache[sym] = min(rate, 1.0)
-            logger.info("[MARGIN] Kite: loaded %d symbols", len(self._cache))
-            return True
-        except Exception as e:
-            logger.warning("[MARGIN] Kite load failed: %s", e)
-            return False
 
     def _load_from_nse(self) -> bool:
         try:
@@ -75,11 +57,9 @@ class MarginCache:
         if self._loaded_date == today:
             return  # already fresh for today
         self._cache.clear()
-        if self._kite and self._load_from_kite():
-            pass
-        elif not self._load_from_nse():
+        if not self._load_from_nse():
             logger.error(
-                "[MARGIN] Both sources failed — all symbols use %.0f%% margin fallback",
+                "[MARGIN] NSE source failed — all symbols use %.0f%% margin fallback",
                 _DEFAULT_MARGIN_RATE * 100,
             )
         self._loaded_date = today
@@ -96,14 +76,14 @@ class MarginCache:
         return 1.0 / self.get_margin_rate(symbol)
 
 
-# Module-level singleton — swap kite client when going live
-_margin_cache = MarginCache(kite_client=None)
+# Module-level singleton — swap dhan client when going live
+_margin_cache = MarginCache()
 
 
-def set_kite_client(kite):
-    """Call after Kite login to switch to broker-sourced margins."""
+def set_dhan_client(dhan):
+    """We don't use margin API directly from Dhan for now, fallback to NSE."""
     global _margin_cache
-    _margin_cache = MarginCache(kite_client=kite)
+    _margin_cache = MarginCache()
 
 
 # ---------------------------------------------------------------------------

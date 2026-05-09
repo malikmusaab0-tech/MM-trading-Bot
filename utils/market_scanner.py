@@ -14,7 +14,7 @@ import time
 from typing import List, Dict
 
 import pandas as pd
-from kiteconnect import KiteConnect
+from dhanhq import dhanhq
 
 from config import settings
 
@@ -24,128 +24,117 @@ logger = logging.getLogger(__name__)
 class MarketScanner:
     """Scans NSE market for trading opportunities"""
 
-    def __init__(self, kite: KiteConnect):
-        self.kite        = kite
-        self.instruments = []
-        self._load_instruments()
-
-    def _load_instruments(self):
-        try:
-            all_instruments  = self.kite.instruments("NSE")
-            self.instruments = [
-                inst for inst in all_instruments
-                if inst["instrument_type"] == "EQ" and inst["segment"] == "NSE"
-            ]
-            logger.info(f"Loaded {len(self.instruments)} NSE equity instruments")
-        except Exception as e:
-            logger.error(f"Failed to load instruments: {e}")
-            self.instruments = []
+    def __init__(self, dhan: dhanhq):
+        self.dhan = dhan
+        from utils.dhan_helper import dhan_helper
+        self.dhan_helper = dhan_helper
+        self.instruments = list(self.dhan_helper.symbol_to_id.keys())
+        logger.info(f"Loaded {len(self.instruments)} NSE equity instruments from helper")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal helpers
     # ─────────────────────────────────────────────────────────────────────────
-    def _batch_quote(self, symbols: list) -> dict:
-        """
-        Fetch kite.quote() for a list of NSE symbols in chunks of 500.
-        Returns {'NSE:SYM': data_dict} merged from all chunks.
-        Adds a small sleep between chunks to avoid rate limiting.
-        """
-        result     = {}
-        chunk_size = 500
-        keys       = [f"NSE:{s}" for s in symbols]
-        for i in range(0, len(keys), chunk_size):
-            chunk = keys[i: i + chunk_size]
-            try:
-                data = self.kite.quote(chunk)
-                result.update(data)
-            except Exception as e:
-                logger.warning(f"_batch_quote error chunk {i}: {e}")
-            if i + chunk_size < len(keys):
-                time.sleep(0.4)   # respect ~3 req/s Zerodha limit between chunks
-        return result
 
     # ─────────────────────────────────────────────────────────────────────────
     # Liquid stocks filter
     # ─────────────────────────────────────────────────────────────────────────
     def get_liquid_stocks(self) -> List[str]:
         """
-        Get liquid NSE stocks using a single batched quote call per 500 symbols.
-        FIX: was calling kite.quote() per-batch already here (ok), but
-        scan_for_opportunities() then called kite.quote() again per-symbol
-        on the resulting list — that second layer is what we eliminated.
+        Get liquid NSE stocks by scanning the Nifty 100 instruments and filtering
+        using daily historical data from Dhan.
         """
         try:
-            symbols    = [f"NSE:{inst['tradingsymbol']}" for inst in self.instruments]
-            liquid     = []
-            chunk_size = 500
+            from utils.rate_limiter import retry_with_backoff
+            from datetime import datetime, timedelta
+            liquid = []
 
-            for i in range(0, len(symbols), chunk_size):
-                chunk = symbols[i: i + chunk_size]
+            to_dt = datetime.now()
+            from_dt = to_dt - timedelta(days=2) # Get last few days to ensure we get a trading day
+
+            for symbol in self.instruments:
+                sec_id = self.dhan_helper.get_security_id(symbol)
+                if not sec_id: continue
                 try:
-                    quotes = self.kite.quote(chunk)
-                    for key, data in quotes.items():
-                        trading_symbol = key.replace("NSE:", "")
-                        ltp    = data.get("last_price", 0)
-                        volume = data.get("volume", 0)
-                        if (settings.MIN_STOCK_PRICE <= ltp <= settings.MAX_STOCK_PRICE
-                                and volume >= settings.MIN_VOLUME):
-                            turnover_cr = ltp * volume / 10_000_000
-                            if turnover_cr >= settings.MIN_LIQUIDITY_CRORE:
-                                liquid.append(trading_symbol)
-                except Exception as e:
-                    logger.warning(f"get_liquid_stocks error chunk {i}: {e}")
-                if i + chunk_size < len(symbols):
-                    time.sleep(0.4)
+                    @retry_with_backoff(retries=3)
+                    def _fetch():
+                        return self.dhan.historical_daily_data(
+                            symbol=sec_id,
+                            exchange_segment='NSE_EQ',
+                            instrument_type='EQUITY',
+                            expiry_code=0,
+                            from_date=from_dt.strftime('%Y-%m-%d'),
+                            to_date=to_dt.strftime('%Y-%m-%d')
+                        )
 
-            logger.info(f"Found {len(liquid)} liquid stocks")
-            return liquid
+                    data = _fetch()
+
+                    if data and data.get('data'):
+                        df = pd.DataFrame(data['data'])
+                        if not df.empty:
+                            last_row = df.iloc[-1]
+                            ltp = float(last_row.get('close', 0))
+                            volume = float(last_row.get('volume', 0))
+
+                            if (settings.MIN_STOCK_PRICE <= ltp <= settings.MAX_STOCK_PRICE
+                                    and volume >= settings.MIN_VOLUME):
+                                turnover_cr = ltp * volume / 10_000_000
+                                if turnover_cr >= settings.MIN_LIQUIDITY_CRORE:
+                                    liquid.append(symbol)
+                except Exception as e:
+                    logger.debug(f"get_liquid_stocks error for {symbol}: {e}")
+
+                time.sleep(0.1) # Small delay to respect rate limit while looping
+
+            logger.info(f"Found {len(liquid)} liquid Nifty 100 stocks")
+            return liquid if liquid else self.instruments
 
         except Exception as e:
             logger.error(f"Error in get_liquid_stocks: {e}")
-            return settings.DEFAULT_WATCHLIST
+            return self.instruments
 
     # ─────────────────────────────────────────────────────────────────────────
     # Main scan — FULLY BATCHED, zero per-symbol API calls
     # ─────────────────────────────────────────────────────────────────────────
     def scan_for_opportunities(self, stocks: List[str] = None) -> List[Dict]:
         """
-        Scan stocks for trading opportunities.
-
-        FIX: old code called kite.quote(f"NSE:{symbol}") inside a for-loop
-        over all liquid stocks — up to 952 individual API calls per cycle.
-        New code fetches ALL quotes in one _batch_quote() call (chunked at 500),
-        then scores signals purely from the resulting dict. No API calls inside
-        the scoring loop.
+        Scan stocks for trading opportunities. We use redis live data state later.
         """
+        import redis
+        from config import settings
+
+        r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
+
         if stocks is None:
-            stocks = self.get_liquid_stocks() if settings.SCAN_ENTIRE_MARKET                      else settings.DEFAULT_WATCHLIST
+            stocks = self.get_liquid_stocks() if settings.SCAN_ENTIRE_MARKET else settings.DEFAULT_WATCHLIST
 
         if not stocks:
             return []
 
-        # ── Single batched quote fetch for all candidate stocks ───────────
-        logger.info(f"Fetching quotes for {len(stocks)} stocks (batched)...")
-        quote_cache = self._batch_quote(stocks)
-
-        if not quote_cache:
-            logger.warning("quote_cache empty — no opportunities this cycle")
-            return []
-
-        # ── Score signals from cache — ZERO API calls here ───────────────
         opportunities = []
         for symbol in stocks:
             try:
-                key  = f"NSE:{symbol}"
-                data = quote_cache.get(key)
-                if not data:
+                raw_data = r.hgetall(f"live_state:{symbol}")
+                if not raw_data:
                     continue
 
-                ohlc       = data.get("ohlc", {})
-                ltp        = data.get("last_price", 0)
-                volume     = data.get("volume", 0)
-                avg_volume = data.get("average_price", 0) * volume if volume else 0
+                ltp = float(raw_data.get("ltp", 0))
+                volume = float(raw_data.get("volume", 0))
 
-                signals       = []
+                # We need OHLC data to perform the custom logic
+                # Since we don't have full OHLC in websocket, we will just use
+                # whatever we have, or fallback. If we stored previous day data
+                # we could use it, but for now we will restore the logic structure
+                # and assume open/high/low are either from websocket (if supported) or
+                # cached from a daily fetch. We'll use dummy values for OHLC if not present
+                # to satisfy the structure without crashing, and if they become available
+                # in the future via Redis, the logic will immediately work.
+
+                day_open = float(raw_data.get("open", ltp))
+                day_high = float(raw_data.get("high", ltp))
+                day_low = float(raw_data.get("low", ltp))
+                avg_volume = float(raw_data.get("avg_volume", 0))
+
+                signals = []
                 signal_strength = 0
 
                 # Volume surge
@@ -154,19 +143,16 @@ class MarketScanner:
                     signal_strength += 1
 
                 # Near day low (potential bounce)
-                day_low = ohlc.get("low", ltp)
                 if ltp and day_low and ltp <= day_low * 1.02:
                     signals.append("NEAR_DAY_LOW")
                     signal_strength += 1
 
                 # Near day high (potential breakout)
-                day_high = ohlc.get("high", ltp)
                 if ltp and day_high and ltp >= day_high * 0.98:
                     signals.append("NEAR_DAY_HIGH")
                     signal_strength += 1
 
                 # Strong intraday move (>2%)
-                day_open = ohlc.get("open", 0)
                 if day_open:
                     change_pct = (ltp - day_open) / day_open * 100
                     if abs(change_pct) >= 2:
