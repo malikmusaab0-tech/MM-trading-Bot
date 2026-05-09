@@ -26,9 +26,21 @@ SEGMENT_INTRADAY = "INTRADAY"
 SEGMENT_SWING    = "SWING"
 SEGMENT_LONGTERM = "LONGTERM"
 
-# Kite API
-KITE_API_KEY    = os.getenv("KITE_API_KEY",    "2kcgzxe407fpuvif")
-KITE_API_SECRET = os.getenv("KITE_API_SECRET", "15n1n3w5k3y70pvxayy7148q3dziawtc")
+# DhanHQ API
+DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID", "dummy_client_id")
+DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "dummy_access_token")
+
+# Redis
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_DB = int(os.getenv("REDIS_DB", 0))
+
+# PostgreSQL
+POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "trading_db")
 
 # ---------------------------------------------------------------------------
 # Trading Parameters

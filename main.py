@@ -6,11 +6,11 @@ from datetime import datetime, timedelta
 import logging
 
 import pandas as pd
-from kiteconnect import KiteConnect
+from dhanhq import dhanhq
 
 from config import settings
 from data.database import init_db, get_session, Position
-from utils.auth import get_kite_client, load_access_token
+from utils.auth import get_dhan_client, load_access_token
 from utils.paper_trading import PaperTradingEngine
 from utils.market_scanner import MarketScanner
 from utils.strategy_selector import StrategySelector
@@ -68,7 +68,7 @@ def write_scan_state(state: dict):
 
 
 def fetch_candles(
-    kite: KiteConnect, symbol: str, interval: str = None
+    dhan: dhanhq, symbol: str, interval: str = None
 ) -> pd.DataFrame:
     if interval is None:
         interval = settings.CANDLE_INTERVAL
@@ -77,17 +77,37 @@ def fetch_candles(
     from_dt = to_dt - timedelta(minutes=settings.CANDLE_LOOKBACK_MINUTES)
 
     try:
-        q = kite.quote(f"NSE:{symbol}")
-        token = q[f"NSE:{symbol}"]["instrument_token"]
-        data = kite.historical_data(
-            instrument_token=token,
-            from_date=from_dt,
-            to_date=to_dt,
-            interval=interval,
-            continuous=False,
-            oi=False,
-        )
-        return pd.DataFrame(data) if data else pd.DataFrame()
+        from utils.dhan_helper import dhan_helper
+        from utils.rate_limiter import retry_with_backoff
+        sec_id = dhan_helper.get_security_id(symbol)
+        if not sec_id:
+            return pd.DataFrame()
+
+        @retry_with_backoff(retries=3)
+        def _fetch():
+            return dhan.historical_minute_charts(
+                symbol=sec_id,
+                exchange_segment='NSE_EQ',
+                instrument_type='EQUITY',
+                expiry_code=0,
+                from_date=from_dt.strftime('%Y-%m-%d'),
+                to_date=to_dt.strftime('%Y-%m-%d')
+            )
+
+        data = _fetch()
+
+        if data and data.get('data'):
+             df = pd.DataFrame(data['data'])
+             df.rename(columns={
+                 'open': 'open',
+                 'high': 'high',
+                 'low': 'low',
+                 'close': 'close',
+                 'volume': 'volume',
+                 'start_Time': 'timestamp'
+             }, inplace=True)
+             return df
+        return pd.DataFrame()
     except Exception as e:
         logger.error(f"Error fetching candles for {symbol}: {e}")
         return pd.DataFrame()
@@ -122,20 +142,30 @@ def main():
     logger.info("PRIMA PRO - LONG + SHORT EDITION")
     logger.info("=" * 60)
 
+    # Run pre-flight system checks
+    from utils.system_check import preflight_check
+    preflight_check()
+
+    # Start WebSocket listener in a separate thread
+    import threading
+    from utils.websocket_listener import start_websocket
+    ws_thread = threading.Thread(target=start_websocket, daemon=True)
+    ws_thread.start()
+
     init_db()
 
     access_token = load_access_token()
     if not access_token:
-        logger.error("No access_token. Run scripts/auto_authenticate.py first.")
-        return
+        logger.error("No Dhan access_token.")
+        # return # We will just use the dummy one or settings
 
-    kite = get_kite_client(access_token)
-    from utils.risk_manager import set_kite_client as set_margin_kite
-    set_margin_kite(kite)
+    dhan = get_dhan_client(access_token)
+    from utils.risk_manager import set_dhan_client as set_margin_dhan
+    set_margin_dhan(dhan)
 
     # Intraday engine + components
     engine = PaperTradingEngine()
-    scanner = MarketScanner(kite)
+    scanner = MarketScanner(dhan)
     selector = StrategySelector()
     risk_manager = RiskManager()
     pattern_rec = PatternRecognizer()
@@ -152,7 +182,7 @@ def main():
 
     # SwingEngine: daily swing ideas + paper trades (segment=SWING) + alerts
     swing_engine = SwingEngine(
-        kite=kite,
+        dhan=dhan,
         trading_engine=engine,
         symbols=settings.DEFAULT_WATCHLIST,
         notifier=notifier,
@@ -251,14 +281,21 @@ def main():
             logger.info(f"Found {len(opportunities)} opportunities")
 
             # ── Manage existing open positions ───────────────────────────────
+            import redis
+            r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
+
             with get_session() as session:
                 for pos in (
                     session.query(Position)
                     .filter(Position.quantity != 0)
                     .all()
                 ):
-                    ltp_data = kite.ltp(f"NSE:{pos.symbol}")
-                    current_price = ltp_data[f"NSE:{pos.symbol}"]["last_price"]
+                    raw_data = r.hgetall(f"live_state:{pos.symbol}")
+                    if not raw_data:
+                        continue
+                    current_price = float(raw_data.get("ltp", 0))
+                    if current_price == 0:
+                        continue
 
                     risk_manager.update_trailing_stop(
                         pos.symbol, current_price, pos.avg_price
@@ -286,7 +323,7 @@ def main():
                 logger.info(f"--- {symbol} ---")
                 time.sleep(0.3)
 
-                df = fetch_candles(kite, symbol)
+                df = fetch_candles(dhan, symbol)
                 if df.empty:
                     continue
 
@@ -344,8 +381,8 @@ def main():
                     }
                 )
 
-                ltp_data = kite.ltp(f"NSE:{symbol}")
-                current_price = ltp_data[f"NSE:{symbol}"]["last_price"]
+                raw_data = r.hgetall(f"live_state:{symbol}")
+                current_price = float(raw_data.get("ltp", 0)) if raw_data else opp["ltp"]
                 atr = get_atr(df, current_price)
 
                 # Check can_open PER SYMBOL
@@ -364,7 +401,12 @@ def main():
                             f"BUY {symbol} x{qty} @ Rs.{current_price:.2f}  "
                             f"notional=Rs.{qty * current_price:,.0f}"
                         )
-                        trade = engine.buy(symbol, qty, current_price)
+                        sl = current_price - (atr * settings.STOP_LOSS_ATR_MULTIPLIER)
+                        tp = current_price + (atr * settings.TAKE_PROFIT_ATR_MULTIPLIER)
+                        trade = engine.buy(
+                            symbol, qty, current_price,
+                            order_type="BRACKET", stop_loss=sl, take_profit=tp
+                        )
                         if trade:
                             risk_manager.set_stop_loss(
                                 symbol, current_price, atr
@@ -400,7 +442,12 @@ def main():
                             f"SHORT {symbol} x{qty} @ Rs.{current_price:.2f}  "
                             f"notional=Rs.{qty * current_price:,.0f}"
                         )
-                        trade = engine.short(symbol, qty, current_price)
+                        sl = current_price + (atr * settings.STOP_LOSS_ATR_MULTIPLIER)
+                        tp = current_price - (atr * settings.TAKE_PROFIT_ATR_MULTIPLIER)
+                        trade = engine.short(
+                            symbol, qty, current_price,
+                            order_type="BRACKET", stop_loss=sl, take_profit=tp
+                        )
                         if trade:
                             risk_manager.set_short_stop_loss(
                                 symbol, current_price, atr
@@ -471,17 +518,14 @@ def main():
                     .filter(Position.quantity != 0)
                     .all()
                 )
-                syms = [f"NSE:{p.symbol}" for p in positions]
-                if syms:
-                    ltp_data = kite.ltp(syms)
-                    engine.update_unrealized_pnls(
-                        {
-                            p.symbol: ltp_data[f"NSE:{p.symbol}"][
-                                "last_price"
-                            ]
-                            for p in positions
-                        }
-                    )
+                if positions:
+                    update_dict = {}
+                    for p in positions:
+                        raw_data = r.hgetall(f"live_state:{p.symbol}")
+                        if raw_data and raw_data.get("ltp"):
+                            update_dict[p.symbol] = float(raw_data["ltp"])
+                    if update_dict:
+                        engine.update_unrealized_pnls(update_dict)
 
             m = risk_manager.get_portfolio_risk()
             logger.info(
