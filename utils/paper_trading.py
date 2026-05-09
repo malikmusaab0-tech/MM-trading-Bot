@@ -63,8 +63,9 @@ class PaperTradingEngine:
     # Swing/long-term will pass SEGMENT_SWING / SEGMENT_LONGTERM explicitly.
     # ------------------------------------------------------------------ #
 
-    def buy(self, symbol, quantity, price, segment=None, order_type="REGULAR", stop_loss=None, take_profit=None):
+    def buy(self, symbol, quantity, price, segment=None, order_type="REGULAR", stop_loss=None, take_profit=None, product_type=None):
         seg = segment or settings.SEGMENT_INTRADAY
+        product_type = product_type or ("INTRADAY" if seg == settings.SEGMENT_INTRADAY else "MTF")
         trade_value = quantity * price
         with get_session() as session:
             if not self._can_open(trade_value, session):
@@ -106,6 +107,8 @@ class PaperTradingEngine:
                 stop_loss=stop_loss,
                 take_profit=take_profit
             )
+            # Log product_type to console if not saving to DB
+            trade.product_type = product_type
             session.add(trade)
             session.add(
                 PortfolioSnapshot(
@@ -120,8 +123,9 @@ class PaperTradingEngine:
             )
             return trade
 
-    def sell(self, symbol, quantity, price, segment=None, order_type="REGULAR"):
+    def sell(self, symbol, quantity, price, segment=None, order_type="REGULAR", product_type=None):
         seg = segment or settings.SEGMENT_INTRADAY
+        product_type = product_type or ("INTRADAY" if seg == settings.SEGMENT_INTRADAY else "MTF")
         with get_session() as session:
             pos = self._get_pos(session, symbol)
             if pos is None or pos.quantity <= 0:
@@ -143,6 +147,7 @@ class PaperTradingEngine:
                 timestamp=datetime.utcnow(),
                 segment=seg,
                 order_type=order_type,
+                product_type=product_type
             )
             session.add(trade)
             session.add(
@@ -158,8 +163,9 @@ class PaperTradingEngine:
             )
             return trade
 
-    def short(self, symbol, quantity, price, segment=None, order_type="REGULAR", stop_loss=None, take_profit=None):
+    def short(self, symbol, quantity, price, segment=None, order_type="REGULAR", stop_loss=None, take_profit=None, product_type=None):
         seg = segment or settings.SEGMENT_INTRADAY
+        product_type = product_type or ("INTRADAY" if seg == settings.SEGMENT_INTRADAY else "MTF")
         trade_value = quantity * price
         with get_session() as session:
             if not self._can_open(trade_value, session):
@@ -200,7 +206,8 @@ class PaperTradingEngine:
                 segment=seg,
                 order_type=order_type,
                 stop_loss=stop_loss,
-                take_profit=take_profit
+                take_profit=take_profit,
+                product_type=product_type
             )
             session.add(trade)
             session.add(
@@ -216,8 +223,9 @@ class PaperTradingEngine:
             )
             return trade
 
-    def cover(self, symbol, quantity, price, segment=None, order_type="REGULAR"):
+    def cover(self, symbol, quantity, price, segment=None, order_type="REGULAR", product_type=None):
         seg = segment or settings.SEGMENT_INTRADAY
+        product_type = product_type or ("INTRADAY" if seg == settings.SEGMENT_INTRADAY else "MTF")
         with get_session() as session:
             pos = self._get_pos(session, symbol)
             if pos is None or pos.quantity >= 0:
@@ -239,6 +247,7 @@ class PaperTradingEngine:
                 timestamp=datetime.utcnow(),
                 segment=seg,
                 order_type=order_type,
+                product_type=product_type
             )
             session.add(trade)
             session.add(

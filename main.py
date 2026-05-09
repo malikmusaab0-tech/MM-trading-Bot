@@ -308,10 +308,10 @@ def main():
                     if should_close:
                         logger.info(f"Closing {pos.symbol}: {close_reason}")
                         if pos.quantity > 0:
-                            engine.sell(pos.symbol, pos.quantity, current_price)
+                            engine.sell(pos.symbol, pos.quantity, current_price, product_type="INTRADAY")
                         else:
                             engine.cover(
-                                pos.symbol, abs(pos.quantity), current_price
+                                pos.symbol, abs(pos.quantity), current_price, product_type="INTRADAY"
                             )
                         risk_manager.cleanup_closed_position(pos.symbol)
 
@@ -405,7 +405,8 @@ def main():
                         tp = current_price + (atr * settings.TAKE_PROFIT_ATR_MULTIPLIER)
                         trade = engine.buy(
                             symbol, qty, current_price,
-                            order_type="BRACKET", stop_loss=sl, take_profit=tp
+                            order_type="BRACKET", stop_loss=sl, take_profit=tp,
+                            product_type="INTRADAY"
                         )
                         if trade:
                             risk_manager.set_stop_loss(
@@ -426,7 +427,7 @@ def main():
                         f"SELL {symbol} x{current_qty} @ Rs.{current_price:.2f}"
                     )
                     trade = engine.sell(
-                        symbol, signal.quantity or current_qty, current_price
+                        symbol, signal.quantity or current_qty, current_price, product_type="INTRADAY"
                     )
                     if trade:
                         logger.info(f"  P&L=Rs.{trade.pnl:.2f}")
@@ -446,7 +447,8 @@ def main():
                         tp = current_price - (atr * settings.TAKE_PROFIT_ATR_MULTIPLIER)
                         trade = engine.short(
                             symbol, qty, current_price,
-                            order_type="BRACKET", stop_loss=sl, take_profit=tp
+                            order_type="BRACKET", stop_loss=sl, take_profit=tp,
+                            product_type="INTRADAY"
                         )
                         if trade:
                             risk_manager.set_short_stop_loss(
@@ -470,6 +472,7 @@ def main():
                         symbol,
                         abs(signal.quantity or current_qty),
                         current_price,
+                        product_type="INTRADAY"
                     )
                     if trade:
                         logger.info(f"  P&L=Rs.{trade.pnl:.2f}")
@@ -491,11 +494,11 @@ def main():
                         )
                         if current_qty > 0:
                             trade = engine.sell(
-                                symbol, current_qty, current_price
+                                symbol, current_qty, current_price, product_type="INTRADAY"
                             )
                         else:
                             trade = engine.cover(
-                                symbol, abs(current_qty), current_price
+                                symbol, abs(current_qty), current_price, product_type="INTRADAY"
                             )
                         if trade:
                             logger.info(f"  P&L=Rs.{trade.pnl:.2f}")

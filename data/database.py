@@ -31,6 +31,7 @@ class Trade(Base):
     order_type = Column(String, nullable=True) # REGULAR, BRACKET, FOREVER
     stop_loss = Column(Float, nullable=True)
     take_profit = Column(Float, nullable=True)
+    product_type = Column(String, nullable=True) # INTRADAY, MTF
 
 
 class Position(Base):

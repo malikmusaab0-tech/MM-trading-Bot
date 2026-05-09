@@ -194,7 +194,8 @@ class SwingEngine:
                     segment=settings.SEGMENT_SWING,
                     order_type="FOREVER", # Or OCO, to signify swing
                     stop_loss=stop,
-                    take_profit=target
+                    take_profit=target,
+                    product_type="MTF"
                 )
                 if trade is None:
                     print(f"[SWING] {symbol}: trade blocked by risk/margin engine")
