@@ -1,0 +1,63 @@
+/* App-specific styles */
+
+/* Smooth scroll behavior */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Ensure full-width sections */
+section {
+  width: 100%;
+}
+
+/* Custom focus styles */
+*:focus-visible {
+  outline: 2px solid #00e5a0;
+  outline-offset: 2px;
+}
+
+/* Button hover lift effect */
+button {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+/* Link underline animation */
+a {
+  transition: color 0.3s ease;
+}
+
+/* Image loading placeholder */
+img {
+  background: linear-gradient(135deg, #161b22 0%, #1c2230 100%);
+}
+
+/* Prevent text selection on interactive elements */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Hardware acceleration for animations */
+.will-change-transform {
+  will-change: transform;
+}
+
+.will-change-opacity {
+  will-change: opacity;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PRIMA Pro — Trading Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body { background:#0f172a; color:#e2e8f0; font-family:'Segoe UI',sans-serif; }
+    .card { background:#1e293b; border:1px solid #334155; border-radius:0.75rem; padding:1rem; }
+    .pos-green { color:#34d399; } .pos-red { color:#f87171; }
+    .badge-long  { background:#064e3b; color:#6ee7b7; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700; }
+    .badge-short { background:#450a0a; color:#fca5a5; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700; }
+    .badge-live  { background:#14532d; color:#86efac; padding:2px 8px; border-radius:4px; font-size:11px; animation:pulse 2s infinite; }
+    .badge-seg-intra  { background:#1d4ed8; color:#bfdbfe; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; }
+    .badge-seg-swing  { background:#7c2d12; color:#fed7aa; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; }
+    .badge-seg-long   { background:#3f6212; color:#bbf7d0; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th { text-align:left; padding:6px 8px; color:#94a3b8; border-bottom:1px solid #334155; font-weight:600; text-transform:uppercase; font-size:10px; letter-spacing:0.05em; }
+    td { padding:6px 8px; border-bottom:1px solid #1e293b; }
+    tr:hover td { background:#263148; }
+    .status-bar { background:#1e293b; border-bottom:1px solid #334155; font-size:11px; color:#64748b; padding:4px 16px; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<div class="status-bar flex justify-between items-center">
+  <span>PRIMA Pro Trading Bot &nbsp;|&nbsp; MIS Intraday &nbsp;|&nbsp; 5x Margin &nbsp;|&nbsp; Paper Mode</span>
+  <span id="clock" style="color:#94a3b8;font-size:13px;">--:--:--</span>
+</div>
+
+<div class="flex items-center justify-between p-4 pb-2">
+  <div class="flex items-center gap-3">
+    <span class="text-xl font-bold text-white">&#9650; PRIMA Pro</span>
+    <span class="badge-live">&#9679; Live</span>
+    <span class="text-slate-500 text-xs" id="last-updated">Last update: --</span>
+  </div>
+  <div class="flex gap-2">
+    <button onclick="toggleBot()" id="bot-btn"
+      class="bg-red-700 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded font-semibold transition">
+      &#9208; Stop Bot
+    </button>
+    <button onclick="document.getElementById('reset-modal').style.display='flex'"
+      class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-1.5 rounded transition">
+      &#8635; Reset Paper
+    </button>
+  </div>
+</div>
+
+<!-- SUMMARY TILES -->
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 px-4 mb-3">
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Equity</div><div class="font-bold text-white text-lg" id="summary-equity">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Cash</div><div class="font-bold text-white text-lg" id="summary-cash">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Unrealized P&amp;L</div><div class="font-bold text-lg" id="summary-unrealized">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Realized P&amp;L</div><div class="font-bold text-lg" id="summary-realized">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Total P&amp;L</div><div class="font-bold text-lg" id="summary-total">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Returns</div><div class="font-bold text-lg" id="summary-returns">--</div></div>
+</div>
+
+<!-- STATS ROW -->
+<div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-10 gap-3 px-4 mb-3">
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Positions</div><div class="font-semibold text-white" id="summary-positions">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Long / Short</div><div class="font-semibold text-white" id="summary-longshort">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Net Exposure</div><div class="font-semibold text-white" id="summary-exposure">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">MIS Limit (5x)</div><div class="font-semibold text-white" id="summary-mis-limit">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Win Rate</div><div class="font-semibold text-white" id="summary-winrate">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Best Trade</div><div class="font-semibold" id="summary-best">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Worst Trade</div><div class="font-semibold" id="summary-worst">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Profit Factor</div><div class="font-semibold" id="summary-pf">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Intraday U P&amp;L</div><div class="font-semibold" id="summary-intra-upnl">--</div></div>
+  <div class="card"><div class="text-xs text-slate-400 mb-1">Swing U P&amp;L</div><div class="font-semibold" id="summary-swing-upnl">--</div></div>
+</div>
+
+<!-- EQUITY CURVE + POSITIONS -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-3 px-4 mb-3">
+  <div class="card lg:col-span-1">
+    <div class="text-sm font-semibold text-slate-300 mb-2">Equity Curve</div>
+    <canvas id="equity-chart" height="120"></canvas>
+  </div>
+  <div class="card lg:col-span-2">
+    <div class="flex justify-between items-center mb-2">
+      <div class="text-sm font-semibold text-slate-300">Open Positions</div>
+      <span class="text-xs text-slate-500" id="positions-count">0 positions</span>
+    </div>
+    <div style="max-height:200px;overflow-y:auto;">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Seg</th><th>Dir</th><th class="text-right">Qty</th>
+          <th class="text-right">Avg</th><th class="text-right">LTP</th>
+          <th class="text-right">Unrealized</th><th class="text-right">P&amp;L %</th>
+          <th class="text-right">Notional</th>
+        </tr></thead>
+        <tbody id="positions-body">
+          <tr><td colspan="9" class="py-3 text-center text-slate-500">No open positions</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- RECENT TRADES -->
+<div class="card mx-4 mb-3">
+  <div class="flex justify-between items-center mb-2">
+    <div class="text-sm font-semibold text-slate-300">Recent Trades</div>
+    <span class="text-xs text-slate-500" id="trades-count">0 trades</span>
+  </div>
+  <div style="max-height:240px;overflow-y:auto;">
+    <table>
+      <thead><tr>
+        <th>Time</th><th>Symbol</th><th>Side</th>
+        <th class="text-right">Qty</th><th class="text-right">Price</th>
+        <th class="text-right">P&amp;L</th>
+      </tr></thead>
+      <tbody id="trades-body">
+        <tr><td colspan="6" class="py-3 text-center text-slate-500">No trades yet</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- SCAN BAR -->
+<div class="card mx-4 mb-4 flex items-center gap-4 text-xs text-slate-400 flex-wrap">
+  <span>Scanner:</span>
+  <span id="scan-status">--</span>
+  <span>|</span>
+  <span>Liquid: <b class="text-white" id="scan-liquid">--</b></span>
+  <span>Opportunities: <b class="text-emerald-400" id="scan-opp">--</b></span>
+  <span>Last Scan: <b class="text-slate-300" id="scan-last">--</b></span>
+</div>
+
+<!-- RESET MODAL -->
+<div id="reset-modal" style="display:none"
+  class="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+  <div class="card w-80 text-center">
+    <div class="text-lg font-bold text-white mb-2">Reset Paper Trading?</div>
+    <div class="text-sm text-slate-400 mb-4">Deletes all trades &amp; positions.<br>Restores capital to Rs 1,00,000.</div>
+    <div class="flex gap-2 justify-center">
+      <button onclick="resetPaper()"
+        class="bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded text-sm font-semibold">Yes, Reset</button>
+      <button onclick="document.getElementById('reset-modal').style.display='none'"
+        class="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded text-sm">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+async function fetchJson(url){const r=await fetch(url);if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}
+function fmt(v){return "₹"+Number(v||0).toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2});}
+function pct(v){const n=Number(v||0);return(n>=0?"+":"")+n.toFixed(2)+"%";}
+function setText(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+function setHtml(id,val){const e=document.getElementById(id);if(e)e.innerHTML=val;}
+function colorMoney(v){const n=Number(v||0),s=n>0?"pos-green":n<0?"pos-red":"text-slate-400";return`<span class="${s}">${n>0?"+":""}${fmt(n)}</span>`;}
+function colorPct(v){const n=Number(v||0),s=n>0?"pos-green":n<0?"pos-red":"text-slate-400";return`<span class="${s}">${pct(n)}</span>`;}
+
+setInterval(()=>{document.getElementById("clock").textContent=new Date().toLocaleTimeString("en-IN",{hour12:false});},1000);
+
+let equityChart=null;
+function initEquityChart(){
+  const ctx=document.getElementById("equity-chart").getContext("2d");
+  equityChart=new Chart(ctx,{
+    type:"line",
+    data:{labels:[],datasets:[{label:"Equity",data:[],borderColor:"#34d399",backgroundColor:"rgba(52,211,153,0.08)",tension:0.3,pointRadius:0,fill:true}]},
+    options:{responsive:true,plugins:{legend:{display:false}},
+      scales:{x:{display:false},
+              y:{ticks:{color:"#64748b",font:{size:10},callback:v=>"₹"+v.toLocaleString("en-IN")},grid:{color:"#334155"}}}}
+  });
+}
+async function refreshEquityCurve(){
+  try{const d=await fetchJson("/api/portfolio-history?limit=120");
+  if(!equityChart)return;
+  equityChart.data.labels=d.map(x=>x.time);
+  equityChart.data.datasets[0].data=d.map(x=>x.equity);
+  equityChart.update("none");}catch(e){console.error("equity-curve:",e);}
+}
+
+async function refreshSummary(){
+  try{const d=await fetchJson("/api/summary");
+  setText("summary-equity",fmt(d.equity));setText("summary-cash",fmt(d.cash));
+  setHtml("summary-unrealized",colorMoney(d.unrealized_pnl));
+  setHtml("summary-realized",colorMoney(d.realized_pnl));
+  setHtml("summary-total",colorMoney(d.total_pnl));
+  setHtml("summary-returns",colorPct(d.returns_pct));
+  setText("summary-positions",d.positions_count);
+  setText("summary-longshort",`${d.long_count}L / ${d.short_count}S`);
+  setText("summary-exposure",fmt(d.net_exposure));
+  setText("summary-mis-limit",fmt(d.mis_limit));
+  setText("summary-winrate",d.win_rate+"%");
+  setHtml("summary-best",colorMoney(d.best_trade));
+  setHtml("summary-worst",colorMoney(d.worst_trade));
+  const pf=Number(d.profit_factor||0),pfCls=pf>=1.5?"pos-green":pf>0?"text-amber-400":"pos-red";
+  setHtml("summary-pf",`<span class="${pfCls}">${pf.toFixed(2)}</span>`);
+  // Segment-wise unrealized
+  setHtml("summary-intra-upnl",colorMoney(d.intraday_unrealized_pnl));
+  setHtml("summary-swing-upnl",colorMoney(d.swing_unrealized_pnl));
+  }catch(e){console.error("summary:",e);}
+}
+
+function renderPositions(positions){
+  const tbody=document.getElementById("positions-body");
+  setText("positions-count",(positions||[]).length+" position"+((positions||[]).length===1?"":"s"));
+  if(!positions||positions.length===0){
+    tbody.innerHTML='<tr><td colspan="9" class="py-3 text-center text-slate-500">No open positions</td></tr>';return;}
+  tbody.innerHTML=positions.map(p=>{
+    const dirBadge=p.direction==="LONG"
+      ?'<span class="badge-long">LONG</span>'
+      :'<span class="badge-short">SHORT</span>';
+    const seg=(p.segment||"INTRADAY");
+    let segBadge;
+    if(seg==="SWING") segBadge='<span class="badge-seg-swing">SWING</span>';
+    else if(seg==="LONGTERM") segBadge='<span class="badge-seg-long">LONG</span>';
+    else segBadge='<span class="badge-seg-intra">INTRA</span>';
+    const pnlN=Number(p.unrealized_pnl||0),pnlCls=pnlN>0?"pos-green":pnlN<0?"pos-red":"";
+    const pctN=Number(p.pnl_pct||0),pctCls=pctN>0?"pos-green":pctN<0?"pos-red":"";
+    return`<tr>
+      <td class="font-semibold text-white">${p.symbol}</td>
+      <td>${segBadge}</td>
+      <td>${dirBadge}</td>
+      <td class="text-right">${p.qty}</td>
+      <td class="text-right">${fmt(p.avg_price)}</td>
+      <td class="text-right text-sky-300">${fmt(p.ltp)}</td>
+      <td class="text-right"><span class="${pnlCls}">${pnlN>0?"+":""}${fmt(pnlN)}</span></td>
+      <td class="text-right"><span class="${pctCls}">${pct(pctN)}</span></td>
+      <td class="text-right text-slate-300">${fmt(p.notional)}</td>
+    </tr>`;}).join("");
+}
+
+function renderTrades(trades){
+  const tbody=document.getElementById("trades-body");
+  setText("trades-count",(trades||[]).length+" recent trade"+((trades||[]).length===1?"":"s"));
+  if(!trades||trades.length===0){
+    tbody.innerHTML='<tr><td colspan="6" class="py-3 text-center text-slate-500">No trades yet</td></tr>';return;}
+  tbody.innerHTML=trades.map(t=>{
+    const v=Number(t.pnl||0),pnlCls=v>0?"pos-green":v<0?"pos-red":"text-slate-400";
+    const sc=(t.side==="BUY"||t.side==="SHORT")?"text-sky-400":"text-amber-400";
+    const pnlShow=(t.side==="BUY"||t.side==="SHORT")
+      ?'<span class="text-slate-500">—</span>'
+      :`<span class="${pnlCls}">${v>0?"+":""}${fmt(v)}</span>`;
+    return`<tr>
+      <td class="text-slate-400">${t.time}</td>
+      <td class="text-white font-medium">${t.symbol}</td>
+      <td class="${sc} font-semibold">${t.side}</td>
+      <td class="text-right">${t.qty}</td>
+      <td class="text-right">${fmt(t.price)}</td>
+      <td class="text-right">${pnlShow}</td>
+    </tr>`;}).join("");
+}
+
+async function refreshScanState(){
+  try{const s=await fetchJson("/api/scan-state");
+  setText("scan-status",s.scanning?"🟢 Scanning":"⚪ Idle");
+  setText("scan-liquid",s.liquidcount||0);
+  setText("scan-opp",s.oppcount||0);
+  setText("scan-last",s.lastscan||"--");}catch(e){console.error("scan:",e);}
+}
+
+async function toggleBot(){
+  try{const state=await fetchJson("/api/bot/state");const ns=!state.running;
+  await fetch("/api/bot/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({running:ns})});
+  const btn=document.getElementById("bot-btn");
+  btn.textContent=ns?"⏸ Stop Bot":"▶ Start Bot";
+  btn.className=ns
+    ?"bg-red-700 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded font-semibold transition"
+    :"bg-emerald-700 hover:bg-emerald-600 text-white text-xs px-3 py-1.5 rounded font-semibold transition";
+  }catch(e){console.error("toggle:",e);}
+}
+
+async function resetPaper(){
+  try{await fetch("/api/reset-paper",{method:"POST"});
+  document.getElementById("reset-modal").style.display="none";
+  await tick();}catch(e){console.error("reset:",e);}
+}
+
+async function tick(){
+  await Promise.all([
+    refreshSummary(),
+    fetchJson("/api/positions").then(renderPositions).catch(e=>console.error("positions:",e)),
+    fetchJson("/api/trades").then(renderTrades).catch(e=>console.error("trades:",e)),
+    refreshScanState(),
+    refreshEquityCurve(),
+  ]);
+  document.getElementById("last-updated").textContent=
+    "Last update: "+new Date().toLocaleTimeString("en-IN",{hour12:false});
+}
+
+initEquityChart();
+setInterval(tick,2000);
+tick();
+</script>
+</body>
+</html>

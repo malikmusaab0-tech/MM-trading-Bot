@@ -1,251 +1,321 @@
-"""
-Risk Manager - Advanced risk management with trailing stops, dynamic stop losses
-Manages intraday margin, position sizing, and portfolio risk
-"""
 import logging
+import requests
 from typing import Dict, Optional
-from datetime import datetime, time
+from datetime import datetime, time, date
 from data.database import get_session, Position, Trade
 from config import settings
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Margin Cache — fetches per-security margin from NSE VaR file or Kite API
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MARGIN_RATE = 1.0  # 100% margin = 1x leverage (safe fallback)
+_NSE_VAR_URL = "https://nsearchives.nseindia.com/archives/nsccl/var/C_VAR1_0_6.DAT"
+
+
+class MarginCache:
+    """
+    Loads per-symbol margin rates once per session.
+    Primary : NSE VaR+ELM daily file (no broker auth needed).
+    Override : Pass a loaded kite client to use Kite margins API instead.
+    Fallback : Conservative 1x (100% margin) for any symbol not found.
+    """
+
+    def __init__(self, kite_client=None):
+        self._kite = kite_client
+        self._cache: Dict[str, float] = {}    # symbol -> margin rate (0.0–1.0)
+        self._loaded_date: Optional[date] = None
+
+    def _load_from_kite(self) -> bool:
+        try:
+            data = self._kite.margins("equity")
+            for item in data:
+                sym  = str(item.get("tradingsymbol", "")).upper()
+                var  = float(item.get("var", 0)) / 100.0
+                elm  = float(item.get("elm", 0)) / 100.0
+                rate = var + elm
+                if sym and rate > 0:
+                    self._cache[sym] = min(rate, 1.0)
+            logger.info("[MARGIN] Kite: loaded %d symbols", len(self._cache))
+            return True
+        except Exception as e:
+            logger.warning("[MARGIN] Kite load failed: %s", e)
+            return False
+
+    def _load_from_nse(self) -> bool:
+        try:
+            resp = requests.get(
+                _NSE_VAR_URL,
+                timeout=30,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            resp.raise_for_status()
+            for line in resp.text.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 4:
+                    continue
+                sym = parts[0].upper()
+                try:
+                    rate = float(parts[3]) / 100.0
+                    if sym and rate > 0:
+                        self._cache[sym] = min(rate, 1.0)
+                except ValueError:
+                    continue
+            logger.info("[MARGIN] NSE VaR file: loaded %d symbols", len(self._cache))
+            return bool(self._cache)
+        except Exception as e:
+            logger.warning("[MARGIN] NSE VaR load failed: %s", e)
+            return False
+
+    def load(self):
+        """Call once at session start (or auto-triggered on first use)."""
+        today = date.today()
+        if self._loaded_date == today:
+            return  # already fresh for today
+        self._cache.clear()
+        if self._kite and self._load_from_kite():
+            pass
+        elif not self._load_from_nse():
+            logger.error(
+                "[MARGIN] Both sources failed — all symbols use %.0f%% margin fallback",
+                _DEFAULT_MARGIN_RATE * 100,
+            )
+        self._loaded_date = today
+
+    def get_margin_rate(self, symbol: str) -> float:
+        """Returns margin rate fraction e.g. 0.20 means 20% margin = 5x leverage."""
+        if self._loaded_date != date.today():
+            self.load()
+        rate = self._cache.get(symbol.upper(), _DEFAULT_MARGIN_RATE)
+        return max(0.05, min(rate, 1.0))  # clamp: min 5% (20x cap), max 100%
+
+    def get_leverage(self, symbol: str) -> float:
+        """Returns leverage multiplier e.g. 5.0 for 20% margin."""
+        return 1.0 / self.get_margin_rate(symbol)
+
+
+# Module-level singleton — swap kite client when going live
+_margin_cache = MarginCache(kite_client=None)
+
+
+def set_kite_client(kite):
+    """Call after Kite login to switch to broker-sourced margins."""
+    global _margin_cache
+    _margin_cache = MarginCache(kite_client=kite)
+
+
+# ---------------------------------------------------------------------------
+# RiskManager
+# ---------------------------------------------------------------------------
 
 class RiskManager:
-    """Advanced risk management system"""
-    
     def __init__(self):
-        self.trailing_stops = {}  # {symbol: trailing_stop_price}
-        self.position_high_prices = {}  # {symbol: highest_price_since_entry}
-        self.stop_losses = {}  # {symbol: stop_loss_price}
-        self.take_profits = {}  # {symbol: take_profit_price}
-    
-    def calculate_position_size(self, 
-                                symbol: str, 
-                                entry_price: float,
-                                atr: float,
-                                available_capital: float,
-                                margin_multiplier: float = None) -> int:
-        """
-        Calculate optimal position size based on risk parameters
-        
-        Args:
-            symbol: Stock symbol
-            entry_price: Proposed entry price
-            atr: Average True Range
-            available_capital: Available trading capital
-            margin_multiplier: Intraday margin multiplier (default from settings)
-        
-        Returns:
-            Number of shares to buy
-        """
+        self.trailing_stops: Dict[str, float]  = {}
+        self.position_high_prices: Dict[str, float] = {}
+        self.position_low_prices: Dict[str, float]  = {}
+        self.stop_losses: Dict[str, float]     = {}
+        self.take_profits: Dict[str, float]    = {}
+        self.short_flags: Dict[str, bool]      = {}
+
+    def calculate_position_size(
+        self,
+        symbol: str,
+        entry_price: float,
+        atr: float,
+        available_capital: float,
+        margin_multiplier: Optional[float] = None,  # kept for back-compat / test overrides
+    ) -> int:
+
+        # ── Per-security leverage ────────────────────────────────────────────
         if margin_multiplier is None:
-            margin_multiplier = settings.INTRADAY_MARGIN_MULTIPLIER
-        
-        # Calculate risk per share (ATR-based or percentage-based)
+            leverage = _margin_cache.get_leverage(symbol)
+            logger.debug(
+                "[MARGIN] %s  margin=%.1f%%  leverage=%.2fx",
+                symbol,
+                _margin_cache.get_margin_rate(symbol) * 100,
+                leverage,
+            )
+        else:
+            leverage = float(margin_multiplier)
+
+        # ── Risk-based sizing (ATR / % stop) ────────────────────────────────
+        # How many shares can we afford given our stop-loss risk budget?
         risk_per_share = max(
             atr * settings.STOP_LOSS_ATR_MULTIPLIER,
-            entry_price * (settings.STOP_LOSS_PCT / 100)
+            entry_price * settings.STOP_LOSS_PCT / 100,
         )
-        
-        # Calculate position size based on risk
-        risk_capital = available_capital * settings.POSITION_SIZE_PCT  # 2% risk per trade
-        position_size_by_risk = int(risk_capital / risk_per_share)
-        
-        # Calculate max position based on capital limits
-        max_position_value = min(
-            settings.MAX_POSITION_VALUE,
-            available_capital * 0.2  # Max 20% of capital per position
+        risk_capital  = available_capital * (settings.POSITION_SIZE_PCT / 100.0)
+        size_by_risk  = int(risk_capital / max(risk_per_share, 0.01))
+
+        # ── Capital-based sizing (DYNAMIC) ──────────────────────────────────
+        # Max notional = 25% of current cash × per-symbol leverage.
+        # This replaces the old static MAX_POSITION_VALUE = 25000 constant.
+        # Benefits:
+        #   - Scales up as capital grows from profitable trades
+        #   - Scales down automatically during drawdown (built-in risk reduction)
+        #   - Respects actual broker margin per symbol (not flat 5x for everyone)
+        max_notional = available_capital * settings.POSITION_SIZE_CAPITAL_PCT * leverage
+        size_by_cap  = int(max_notional / entry_price)
+
+        logger.debug(
+            "[SIZE] %s  risk_size=%d  cap_size=%d  notional_cap=Rs.%.0f  leverage=%.2fx",
+            symbol, size_by_risk, size_by_cap, max_notional, leverage,
         )
-        
-        # Apply intraday margin
-        position_value_with_margin = max_position_value * margin_multiplier
-        position_size_by_capital = int(position_value_with_margin / entry_price)
-        
-        # Take minimum to respect both risk and capital limits
-        final_position_size = min(position_size_by_risk, position_size_by_capital)
-        
-        # Ensure minimum position size
-        if final_position_size * entry_price < settings.MIN_POSITION_SIZE:
+
+        final = min(size_by_risk, size_by_cap)
+
+        if final * entry_price < settings.MIN_POSITION_SIZE:
+            logger.debug(
+                "[SIZE] %s  rejected — notional Rs.%.0f < MIN Rs.%.0f",
+                symbol, final * entry_price, settings.MIN_POSITION_SIZE,
+            )
             return 0
-        
-        logger.info(f"{symbol}: Position size = {final_position_size} shares "
-                   f"(Entry: ₹{entry_price:.2f}, Risk/share: ₹{risk_per_share:.2f})")
-        
-        return max(1, final_position_size)
-    
-    def set_stop_loss(self, symbol: str, entry_price: float, atr: float):
-        """Set initial stop loss for a position"""
-        stop_loss_distance = atr * settings.STOP_LOSS_ATR_MULTIPLIER
-        stop_loss_price = entry_price - stop_loss_distance
-        
-        self.stop_losses[symbol] = stop_loss_price
+        return max(1, final)
+
+    # ------------------------------------------------------------------
+    # Stop-loss / take-profit helpers
+    # ------------------------------------------------------------------
+
+    def set_stop_loss(self, symbol, entry_price, atr):
+        dist = atr * settings.STOP_LOSS_ATR_MULTIPLIER
+        self.stop_losses[symbol] = entry_price - dist
         self.position_high_prices[symbol] = entry_price
-        
-        logger.info(f"{symbol}: Stop loss set at ₹{stop_loss_price:.2f}")
-    
-    def set_take_profit(self, symbol: str, entry_price: float, atr: float):
-        """Set take profit target for a position"""
-        take_profit_distance = atr * settings.TAKE_PROFIT_ATR_MULTIPLIER
-        take_profit_price = entry_price + take_profit_distance
-        
-        self.take_profits[symbol] = take_profit_price
-        
-        logger.info(f"{symbol}: Take profit set at ₹{take_profit_price:.2f}")
-    
-    def update_trailing_stop(self, symbol: str, current_price: float, entry_price: float):
-        """
-        Update trailing stop loss
-        
-        Args:
-            symbol: Stock symbol
-            current_price: Current market price
-            entry_price: Original entry price
-        
-        Returns:
-            True if trailing stop was updated
-        """
-        # Check if trailing stop is activated
-        profit_pct = ((current_price - entry_price) / entry_price) * 100
-        
-        if profit_pct < settings.TRAILING_STOP_ACTIVATION_PCT:
-            return False  # Not enough profit to activate trailing stop
-        
-        # Update highest price seen
-        if symbol not in self.position_high_prices:
-            self.position_high_prices[symbol] = current_price
+        self.short_flags[symbol] = False
+        logger.info(f"{symbol} [LONG] SL={self.stop_losses[symbol]:.2f}")
+
+    def set_take_profit(self, symbol, entry_price, atr):
+        dist = atr * settings.TAKE_PROFIT_ATR_MULTIPLIER
+        self.take_profits[symbol] = entry_price + dist
+        logger.info(f"{symbol} [LONG] TP={self.take_profits[symbol]:.2f}")
+
+    def set_short_stop_loss(self, symbol, entry_price, atr):
+        dist = atr * settings.STOP_LOSS_ATR_MULTIPLIER
+        self.stop_losses[symbol] = entry_price + dist
+        self.position_low_prices[symbol] = entry_price
+        self.short_flags[symbol] = True
+        logger.info(f"{symbol} [SHORT] SL={self.stop_losses[symbol]:.2f}")
+
+    def set_short_take_profit(self, symbol, entry_price, atr):
+        dist = atr * settings.TAKE_PROFIT_ATR_MULTIPLIER
+        self.take_profits[symbol] = entry_price - dist
+        logger.info(f"{symbol} [SHORT] TP={self.take_profits[symbol]:.2f}")
+
+    def update_trailing_stop(self, symbol, current_price, entry_price):
+        is_short = self.short_flags.get(symbol, False)
+        if is_short:
+            profit_pct = (entry_price - current_price) / entry_price * 100
+            if profit_pct < settings.TRAILING_STOP_ACTIVATION_PCT:
+                return False
+            self.position_low_prices[symbol] = min(
+                self.position_low_prices.get(symbol, current_price), current_price
+            )
+            new_trail = self.position_low_prices[symbol] * (
+                1 + settings.TRAILING_STOP_DISTANCE_PCT / 100
+            )
+            if symbol not in self.trailing_stops or new_trail < self.trailing_stops[symbol]:
+                self.trailing_stops[symbol] = new_trail
+                if symbol in self.stop_losses:
+                    self.stop_losses[symbol] = min(self.stop_losses[symbol], new_trail)
         else:
-            self.position_high_prices[symbol] = max(self.position_high_prices[symbol], current_price)
-        
-        # Calculate trailing stop
-        trailing_distance_pct = settings.TRAILING_STOP_DISTANCE_PCT / 100
-        new_trailing_stop = self.position_high_prices[symbol] * (1 - trailing_distance_pct)
-        
-        # Update if new trailing stop is higher than existing stop loss
-        if symbol not in self.trailing_stops or new_trailing_stop > self.trailing_stops[symbol]:
-            old_stop = self.trailing_stops.get(symbol, 0)
-            self.trailing_stops[symbol] = new_trailing_stop
-            
-            # Also update regular stop loss
-            if symbol in self.stop_losses:
-                self.stop_losses[symbol] = max(self.stop_losses[symbol], new_trailing_stop)
-            
-            logger.info(f"{symbol}: Trailing stop updated from ₹{old_stop:.2f} to ₹{new_trailing_stop:.2f}")
+            profit_pct = (current_price - entry_price) / entry_price * 100
+            if profit_pct < settings.TRAILING_STOP_ACTIVATION_PCT:
+                return False
+            self.position_high_prices[symbol] = max(
+                self.position_high_prices.get(symbol, current_price), current_price
+            )
+            new_trail = self.position_high_prices[symbol] * (
+                1 - settings.TRAILING_STOP_DISTANCE_PCT / 100
+            )
+            if symbol not in self.trailing_stops or new_trail > self.trailing_stops[symbol]:
+                old = self.trailing_stops.get(symbol, 0)
+                self.trailing_stops[symbol] = new_trail
+                if symbol in self.stop_losses:
+                    self.stop_losses[symbol] = max(self.stop_losses[symbol], new_trail)
+                logger.info(f"{symbol} Trailing {old:.2f}→{new_trail:.2f}")
+                return True
+        return False
+
+    def check_stop_loss(self, symbol, current_price):
+        if symbol not in self.stop_losses:
+            return False
+        sl       = self.stop_losses[symbol]
+        is_short = self.short_flags.get(symbol, False)
+        if is_short and current_price >= sl:
+            logger.warning(f"{symbol} [SHORT] SL hit {current_price:.2f}>={sl:.2f}")
             return True
-        
+        if not is_short and current_price <= sl:
+            logger.warning(f"{symbol} [LONG] SL hit {current_price:.2f}<={sl:.2f}")
+            return True
         return False
-    
-    def check_stop_loss(self, symbol: str, current_price: float) -> bool:
-        """Check if stop loss is hit"""
-        if symbol in self.stop_losses:
-            if current_price <= self.stop_losses[symbol]:
-                logger.warning(f"{symbol}: Stop loss hit! Price ₹{current_price:.2f} <= SL ₹{self.stop_losses[symbol]:.2f}")
-                return True
+
+    def check_trailing_stop(self, symbol, current_price):
+        if symbol not in self.trailing_stops:
+            return False
+        tsl      = self.trailing_stops[symbol]
+        is_short = self.short_flags.get(symbol, False)
+        if is_short and current_price >= tsl:
+            return True
+        if not is_short and current_price <= tsl:
+            return True
         return False
-    
-    def check_trailing_stop(self, symbol: str, current_price: float) -> bool:
-        """Check if trailing stop is hit"""
-        if symbol in self.trailing_stops:
-            if current_price <= self.trailing_stops[symbol]:
-                logger.warning(f"{symbol}: Trailing stop hit! Price ₹{current_price:.2f} <= TSL ₹{self.trailing_stops[symbol]:.2f}")
-                return True
+
+    def check_take_profit(self, symbol, current_price):
+        if symbol not in self.take_profits:
+            return False
+        tp       = self.take_profits[symbol]
+        is_short = self.short_flags.get(symbol, False)
+        if is_short and current_price <= tp:
+            logger.info(f"{symbol} [SHORT] TP hit {current_price:.2f}<={tp:.2f}")
+            return True
+        if not is_short and current_price >= tp:
+            logger.info(f"{symbol} [LONG] TP hit {current_price:.2f}>={tp:.2f}")
+            return True
         return False
-    
-    def check_take_profit(self, symbol: str, current_price: float) -> bool:
-        """Check if take profit is hit"""
-        if symbol in self.take_profits:
-            if current_price >= self.take_profits[symbol]:
-                logger.info(f"{symbol}: Take profit hit! Price ₹{current_price:.2f} >= TP ₹{self.take_profits[symbol]:.2f}")
-                return True
-        return False
-    
-    def should_close_position(self, symbol: str, current_price: float, entry_price: float) -> tuple[bool, str]:
-        """
-        Determine if position should be closed based on risk rules
-        
-        Returns:
-            (should_close, reason)
-        """
-        # Check stop loss
-        if self.check_stop_loss(symbol, current_price):
-            return True, "STOP_LOSS"
-        
-        # Check trailing stop
-        if self.check_trailing_stop(symbol, current_price):
-            return True, "TRAILING_STOP"
-        
-        # Check take profit
-        if self.check_take_profit(symbol, current_price):
-            return True, "TAKE_PROFIT"
-        
-        # Check if it's near square-off time
-        if self.is_square_off_time():
-            return True, "SQUARE_OFF_TIME"
-        
+
+    def should_close_position(self, symbol, current_price, entry_price):
+        if self.check_stop_loss(symbol, current_price):     return True, "STOP_LOSS"
+        if self.check_trailing_stop(symbol, current_price): return True, "TRAILING_STOP"
+        if self.check_take_profit(symbol, current_price):   return True, "TAKE_PROFIT"
+        if self.is_square_off_time():                        return True, "SQUARE_OFF_TIME"
         return False, ""
-    
-    def is_square_off_time(self) -> bool:
-        """Check if it's time to square off intraday positions"""
-        current_time = datetime.now().time()
-        square_off_time = time.fromisoformat(settings.SQUARE_OFF_TIME)
-        return current_time >= square_off_time
-    
-    def get_portfolio_risk(self) -> Dict:
-        """Calculate current portfolio risk metrics"""
+
+    def is_square_off_time(self):
+        return datetime.now().time() >= time.fromisoformat(settings.SQUARE_OFF_TIME)
+
+    # ------------------------------------------------------------------
+    # Portfolio-level risk
+    # ------------------------------------------------------------------
+
+    def get_portfolio_risk(self):
         with get_session() as session:
-            positions = session.query(Position).filter(Position.quantity > 0).all()
-            
-            total_exposure = sum(pos.quantity * pos.avg_price for pos in positions)
-            total_unrealized_pnl = sum(pos.unrealized_pnl for pos in positions)
-            total_realized_pnl = sum(pos.realized_pnl for pos in positions)
-            
-            # Calculate max margin usage
-            margin_used_pct = (total_exposure / settings.MAX_INTRADAY_EXPOSURE) * 100
-            
-            # Calculate risk per position
-            position_risks = []
-            for pos in positions:
-                if pos.symbol in self.stop_losses:
-                    potential_loss = (pos.avg_price - self.stop_losses[pos.symbol]) * pos.quantity
-                    risk_pct = (potential_loss / settings.INITIAL_CAPITAL) * 100
-                    position_risks.append({
-                        'symbol': pos.symbol,
-                        'potential_loss': potential_loss,
-                        'risk_pct': risk_pct
-                    })
-            
-            return {
-                'total_positions': len(positions),
-                'total_exposure': total_exposure,
-                'margin_used_pct': margin_used_pct,
-                'unrealized_pnl': total_unrealized_pnl,
-                'realized_pnl': total_realized_pnl,
-                'position_risks': position_risks,
-                'at_max_positions': len(positions) >= settings.MAX_CONCURRENT_POSITIONS
-            }
-    
-    def can_open_new_position(self) -> tuple[bool, str]:
-        """Check if new position can be opened based on risk limits"""
-        risk_metrics = self.get_portfolio_risk()
-        
-        # Check max positions
-        if risk_metrics['at_max_positions']:
-            return False, "MAX_POSITIONS_REACHED"
-        
-        # Check margin usage
-        if risk_metrics['margin_used_pct'] > 90:  # 90% margin used
-            return False, "MARGIN_LIMIT"
-        
-        # Check if square-off time
-        if self.is_square_off_time():
-            return False, "SQUARE_OFF_TIME"
-        
+            positions      = session.query(Position).filter(Position.quantity != 0).all()
+            total_exposure = sum(abs(p.quantity) * p.avg_price for p in positions)
+            margin_pct     = (
+                total_exposure / settings.MAX_INTRADAY_EXPOSURE * 100
+                if settings.MAX_INTRADAY_EXPOSURE else 0
+            )
+            return dict(
+                total_positions=len(positions),
+                total_exposure=total_exposure,
+                margin_used_pct=margin_pct,
+                unrealized_pnl=sum(p.unrealized_pnl for p in positions),
+                realized_pnl=sum(p.realized_pnl for p in positions),
+                at_max_positions=len(positions) >= settings.MAX_CONCURRENT_POSITIONS,
+            )
+
+    def can_open_new_position(self):
+        m = self.get_portfolio_risk()
+        if m["at_max_positions"]:      return False, "MAX_POSITIONS_REACHED"
+        if m["margin_used_pct"] >= 95: return False, "MARGIN_LIMIT"
+        if self.is_square_off_time():  return False, "SQUARE_OFF_TIME"
         return True, "OK"
-    
-    def cleanup_closed_position(self, symbol: str):
-        """Remove risk tracking for closed position"""
-        self.stop_losses.pop(symbol, None)
-        self.trailing_stops.pop(symbol, None)
-        self.take_profits.pop(symbol, None)
-        self.position_high_prices.pop(symbol, None)
-        logger.info(f"{symbol}: Risk tracking cleaned up")
+
+    def cleanup_closed_position(self, symbol):
+        for d in [
+            self.stop_losses, self.trailing_stops, self.take_profits,
+            self.position_high_prices, self.position_low_prices, self.short_flags,
+        ]:
+            d.pop(symbol, None)
+        logger.info(f"{symbol} cleanup done")
