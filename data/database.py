@@ -55,6 +55,19 @@ class PortfolioSnapshot(Base):
     equity = Column(Float)
     cash = Column(Float)
 
+class HistoricalData(Base):
+    __tablename__ = "historical_data"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True)
+    timestamp = Column(DateTime, index=True)
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)
+    interval = Column(String)  # e.g., '5min', 'daily'
+
 class Fundamentals(Base):
     __tablename__ = "fundamentals"
 

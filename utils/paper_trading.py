@@ -94,6 +94,9 @@ class PaperTradingEngine:
             pos.avg_price = ((pos.avg_price * pos.quantity) + trade_value) / total_qty
             pos.quantity = total_qty
             self.cash -= trade_value
+            # Add MTF Pledge Flag to segment description if MTF
+            flagged_seg = f"{seg} [MTF PLEDGE REQ]" if product_type == "MTF" else seg
+
             trade = Trade(
                 symbol=symbol,
                 side="BUY",
@@ -102,13 +105,12 @@ class PaperTradingEngine:
                 pnl=0.0,
                 paper=True,
                 timestamp=datetime.utcnow(),
-                segment=seg,
+                segment=flagged_seg,
                 order_type=order_type,
                 stop_loss=stop_loss,
-                take_profit=take_profit
+                take_profit=take_profit,
+                product_type=product_type
             )
-            # Log product_type to console if not saving to DB
-            trade.product_type = product_type
             session.add(trade)
             session.add(
                 PortfolioSnapshot(
@@ -282,7 +284,8 @@ class PaperTradingEngine:
         return self.cash + unrealized
 
     def square_off_all(self, ltp_map: dict):
-        """Emergency square-off: closes all open positions at given LTPs."""
+        """Emergency square-off: closes all open positions at given LTPs safely."""
+        import time
         with get_session() as session:
             positions = session.query(Position).filter(Position.quantity != 0).all()
             for pos in positions:
@@ -294,3 +297,5 @@ class PaperTradingEngine:
                     self.sell(pos.symbol, pos.quantity, ltp, segment=pos.segment)
                 else:
                     self.cover(pos.symbol, abs(pos.quantity), ltp, segment=pos.segment)
+                # Rate limit safe pacing between executing multiple exit trades
+                time.sleep(0.2)

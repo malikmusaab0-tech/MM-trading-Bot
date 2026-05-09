@@ -1,15 +1,14 @@
 import logging
 import redis
-import json
 import time
+import asyncio
 from dhanhq import marketfeed
 from config import settings
-from utils.auth import get_dhan_client, load_access_token
+from utils.auth import load_access_token
 from utils.dhan_helper import dhan_helper
 
 logger = logging.getLogger(__name__)
 
-# Basic config
 client_id = settings.DHAN_CLIENT_ID
 access_token = load_access_token()
 
@@ -20,37 +19,34 @@ from utils.nifty_100_symbols import NIFTY_100_SYMBOLS
 for symbol in NIFTY_100_SYMBOLS:
     sec_id = dhan_helper.get_security_id(symbol)
     if sec_id:
-        instruments.append((marketfeed.NSE, str(sec_id)))
+        # Tuple format: (exchange_segment, security_id, ticker_type)
+        instruments.append((marketfeed.NSE, str(sec_id), marketfeed.Ticker))
 
-def on_connect(instance):
-    logger.info("Connected to Dhan WebSocket.")
 
-def on_message(instance, message):
-    if 'LTP' in message:
-        # According to dhanhq python package documentation, it parses messages into dicts
-        sec_id = str(message.get('security_id'))
-        ltp = float(message.get('LTP', 0))
-        # Volume might not be in every feed type, need to handle appropriately
-        # Fallback to tick volume or just keep LTP for now
+async def fetch_and_process_loop(ws):
+    while True:
+        try:
+            # We bypass get_data() because it creates a new loop running event which raises "Event loop already running"
+            # Instead we use the internal async methods
+            data = await ws.get_instrument_data()
+            if data and data.get('type') == 'Ticker Data':
+                sec_id = str(data.get('security_id'))
+                ltp = float(data.get('LTP', 0))
 
-        symbol = dhan_helper.get_symbol(sec_id)
-        if symbol:
-            state = {
-                "ltp": ltp,
-                "timestamp": time.time()
-            }
-            # Add volume if it exists
-            if 'volume' in message:
-                 state['volume'] = message['volume']
+                symbol = dhan_helper.get_symbol(sec_id)
+                if symbol:
+                    state = {
+                        "ltp": ltp,
+                        "timestamp": time.time()
+                    }
+                    if 'volume' in data:
+                         state['volume'] = data['volume']
 
-            # Push to Redis
-            r.hset(f"live_state:{symbol}", mapping=state)
+                    r.hset(f"live_state:{symbol}", mapping=state)
+        except Exception as e:
+            logger.error(f"Dhan WebSocket message processing error: {e}")
+            await asyncio.sleep(1)
 
-def on_error(instance, error):
-    logger.error(f"Dhan WebSocket error: {error}")
-
-def on_close(instance):
-    logger.info("Dhan WebSocket closed.")
 
 def start_websocket():
     if not instruments:
@@ -58,17 +54,20 @@ def start_websocket():
         return
 
     try:
+        # DhanHQ 1.3.3 DhanFeed initialization
         ws = marketfeed.DhanFeed(
             client_id,
             access_token,
-            instruments,
-            marketfeed.Ticker,
-            on_connect=on_connect,
-            on_message=on_message,
-            on_error=on_error,
-            on_close=on_close
+            instruments
         )
-        ws.connect()
+
+        async def main_loop():
+            await ws.connect()
+            logger.info("Connected to Dhan WebSocket.")
+            await fetch_and_process_loop(ws)
+
+        asyncio.run(main_loop())
+
     except Exception as e:
          logger.error(f"WebSocket execution failed: {e}")
 
