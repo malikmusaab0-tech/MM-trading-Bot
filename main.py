@@ -61,6 +61,14 @@ SCAN_STATE_FILE = os.path.join(
 
 def write_scan_state(state: dict):
     try:
+        import pandas as pd
+        # Add next_rebalance_due if not present
+        if "next_rebalance_due" not in state:
+            now = datetime.now()
+            last_bday = pd.date_range(start=now.replace(day=1), periods=1, freq='BME')
+            next_due = pd.to_datetime(last_bday[0]).strftime("%Y-%m-%d 15:00:00")
+            state["next_rebalance_due"] = next_due
+
         with open(SCAN_STATE_FILE, "w") as f:
             json.dump(state, f)
     except Exception as e:
@@ -126,6 +134,11 @@ def get_atr(df: pd.DataFrame, current_price: float) -> float:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="PRIMA PRO Trading Bot")
+    parser.add_argument("--rebalance", action="store_true", help="Run manual investing rebalance and exit.")
+    args = parser.parse_args()
+
     logger.info("=" * 60)
     logger.info("PRIMA PRO - LONG + SHORT EDITION")
     logger.info("=" * 60)
@@ -133,6 +146,55 @@ def main():
     # Run pre-flight system checks
     from utils.system_check import preflight_check
     preflight_check()
+
+    access_token = load_access_token()
+    if not access_token:
+        logger.error("No Dhan access_token.")
+        # return # We will just use the dummy one or settings
+
+    dhan = get_dhan_client(access_token)
+
+    # Initialize Engine (Paper vs Live)
+    if settings.LIVE_TRADING_MODE:
+        from utils.live_engine import DhanLiveEngine
+        engine = DhanLiveEngine(dhan=dhan)
+    else:
+        engine = PaperTradingEngine()
+
+    from utils.investing_engine import InvestingEngine
+    investing_engine = InvestingEngine(
+        dhan=dhan,
+        trading_engine=engine
+    )
+
+    if args.rebalance:
+        if settings.LIVE_TRADING_MODE:
+            print("\033[91m" + "WARNING: You are about to execute a MANUAL REBALANCE in LIVE TRADING MODE." + "\033[0m")
+            confirm = input("Are you sure you want to proceed? (yes/no): ")
+            if confirm.lower() not in ['yes', 'y']:
+                print("Manual rebalance aborted.")
+                return
+
+        # Warm data into Redis if we're going to rebalance just to be safe
+        import redis
+        r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
+        from utils.data_warming import warm_data
+        warm_data(dhan, r)
+
+        investing_engine.run_manual_rebalance()
+
+        # Update dashboard state
+        state = {}
+        if os.path.exists(SCAN_STATE_FILE):
+            try:
+                with open(SCAN_STATE_FILE, "r") as f:
+                    state = json.load(f)
+            except: pass
+        state["next_rebalance_due"] = "Manual execution completed."
+        write_scan_state(state)
+
+        logger.info("Manual rebalance complete. Exiting.")
+        return
 
     # Warm data into Redis
     import redis
@@ -148,25 +210,14 @@ def main():
 
     init_db()
 
-    access_token = load_access_token()
-    if not access_token:
-        logger.error("No Dhan access_token.")
-        # return # We will just use the dummy one or settings
-
-    dhan = get_dhan_client(access_token)
     from utils.risk_manager import set_dhan_client as set_margin_dhan
     set_margin_dhan(dhan)
 
-    # Initialize Engine (Paper vs Live)
     if settings.LIVE_TRADING_MODE:
         print("\033[91m" + "==================================================" + "\033[0m")
         print("\033[91m" + "CRITICAL WARNING: LIVE TRADING MODE IS ENABLED!" + "\033[0m")
         print("\033[91m" + "REAL MONEY WILL BE USED FOR ORDER EXECUTION." + "\033[0m")
         print("\033[91m" + "==================================================" + "\033[0m")
-        from utils.live_engine import DhanLiveEngine
-        engine = DhanLiveEngine(dhan=dhan)
-    else:
-        engine = PaperTradingEngine()
 
     scanner = MarketScanner(dhan)
     selector = StrategySelector()
@@ -192,12 +243,6 @@ def main():
     )
     last_swing_run_date = None
 
-    # Investing Engine: monthly momentum strategy for Nifty 100
-    from utils.investing_engine import InvestingEngine
-    investing_engine = InvestingEngine(
-        dhan=dhan,
-        trading_engine=engine
-    )
     last_investing_run_month = None
 
     logger.info(f"Paper Mode : {settings.PAPER_TRADING_MODE}")

@@ -161,7 +161,8 @@ class DhanLiveEngine:
                 trade = Trade(
                     symbol=symbol, side="BUY", quantity=quantity, price=price, pnl=0.0, paper=False,
                     timestamp=datetime.utcnow(), segment=flagged_seg, order_type=order_type,
-                    stop_loss=stop_loss, take_profit=take_profit, product_type=product_type
+                    stop_loss=stop_loss, take_profit=take_profit, product_type=product_type,
+                    is_mtf=(product_type == "MTF")
                 )
                 session.add(trade)
                 session.add(PortfolioSnapshot(timestamp=datetime.utcnow(), equity=self.cash, cash=self.cash))
@@ -184,7 +185,9 @@ class DhanLiveEngine:
 
                     trade = Trade(
                         symbol=symbol, side="SELL", quantity=quantity, price=price, pnl=pnl, paper=False,
-                        timestamp=datetime.utcnow(), segment=seg, order_type=order_type, product_type=product_type
+                        timestamp=datetime.utcnow(), exit_time=datetime.utcnow(), exit_price=price,
+                        segment=seg, order_type=order_type, product_type=product_type,
+                        is_mtf=(product_type == "MTF")
                     )
                     session.add(trade)
             return trade
@@ -211,7 +214,8 @@ class DhanLiveEngine:
                 trade = Trade(
                     symbol=symbol, side="SHORT", quantity=quantity, price=price, pnl=0.0, paper=False,
                     timestamp=datetime.utcnow(), segment=seg, order_type=order_type,
-                    stop_loss=stop_loss, take_profit=take_profit, product_type=product_type
+                    stop_loss=stop_loss, take_profit=take_profit, product_type=product_type,
+                    is_mtf=(product_type == "MTF")
                 )
                 session.add(trade)
              return trade
@@ -231,7 +235,9 @@ class DhanLiveEngine:
                     self.cash -= quantity * price
                     trade = Trade(
                         symbol=symbol, side="COVER", quantity=quantity, price=price, pnl=pnl, paper=False,
-                        timestamp=datetime.utcnow(), segment=seg, order_type=order_type, product_type=product_type
+                        timestamp=datetime.utcnow(), exit_time=datetime.utcnow(), exit_price=price,
+                        segment=seg, order_type=order_type, product_type=product_type,
+                        is_mtf=(product_type == "MTF")
                     )
                     session.add(trade)
             return trade

@@ -26,6 +26,13 @@ class InvestingEngine:
                 dfs[symbol] = pd.DataFrame({'close': pd.to_numeric(closes)})
         return dfs
 
+    def run_manual_rebalance(self):
+        """
+        Public method to manually trigger the rebalance logic.
+        """
+        logger.info("[INVESTING] Manual rebalance triggered.")
+        self._execute_rebalance()
+
     def run_monthly(self):
         """
         Executes the monthly investing strategy.
@@ -33,7 +40,9 @@ class InvestingEngine:
         as CNC (Delivery) orders.
         """
         logger.info("[INVESTING] Running monthly investing strategy...")
+        self._execute_rebalance()
 
+    def _execute_rebalance(self):
         r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
         dfs = self.fetch_historical_data(r)
 

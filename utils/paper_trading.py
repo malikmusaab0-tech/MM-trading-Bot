@@ -109,7 +109,8 @@ class PaperTradingEngine:
                 order_type=order_type,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                product_type=product_type
+                product_type=product_type,
+                is_mtf=(product_type == "MTF")
             )
             session.add(trade)
             session.add(
@@ -147,9 +148,12 @@ class PaperTradingEngine:
                 pnl=pnl,
                 paper=True,
                 timestamp=datetime.utcnow(),
+                exit_time=datetime.utcnow(),
+                exit_price=price,
                 segment=seg,
                 order_type=order_type,
-                product_type=product_type
+                product_type=product_type,
+                is_mtf=(product_type == "MTF")
             )
             session.add(trade)
             session.add(
@@ -209,7 +213,8 @@ class PaperTradingEngine:
                 order_type=order_type,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                product_type=product_type
+                product_type=product_type,
+                is_mtf=(product_type == "MTF")
             )
             session.add(trade)
             session.add(
@@ -247,9 +252,12 @@ class PaperTradingEngine:
                 pnl=pnl,
                 paper=True,
                 timestamp=datetime.utcnow(),
+                exit_time=datetime.utcnow(),
+                exit_price=price,
                 segment=seg,
                 order_type=order_type,
-                product_type=product_type
+                product_type=product_type,
+                is_mtf=(product_type == "MTF")
             )
             session.add(trade)
             session.add(
