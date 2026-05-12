@@ -1,7 +1,7 @@
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, DateTime, Boolean, Index
 )
-from sqlalchemy.orm import declarative_base, sessionmaker, synonym
+from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 from config.settings import DATABASE_PATH, SEGMENT_INTRADAY, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
 
@@ -20,21 +20,21 @@ class Trade(Base):
     # To match user expected log structure for queries
     # While maintaining backwards compatibility with engine code
 
-    trade_id = Column("id", Integer, primary_key=True, index=True) # Column is named id in db, attribute is trade_id
-    id = synonym("trade_id")
+    trade_id = Column(Integer, primary_key=True, index=True)
+    id = trade_id # Alias for existing code
 
     symbol = Column(String, index=True)
     side = Column(String)  # BUY / SELL / SHORT / COVER
-    strategy_type = Column("segment", String, default=SEGMENT_INTRADAY, index=True) # Renamed attribute, column remains segment
-    segment = synonym("strategy_type")
+    strategy_type = Column(String, default=SEGMENT_INTRADAY, index=True) # Renamed segment
+    segment = strategy_type # Alias
 
     quantity = Column(Integer)
     price = Column(Float)
-    entry_price = synonym("price")
+    entry_price = price # Alias
     exit_price = Column(Float, nullable=True)
 
     timestamp = Column(DateTime, default=datetime.utcnow)
-    entry_time = synonym("timestamp")
+    entry_time = timestamp # Alias
     exit_time = Column(DateTime, nullable=True)
 
     pnl = Column(Float, default=0.0)
