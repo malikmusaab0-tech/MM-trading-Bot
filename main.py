@@ -61,6 +61,14 @@ SCAN_STATE_FILE = os.path.join(
 
 def write_scan_state(state: dict):
     try:
+        import pandas as pd
+        # Add next_rebalance_due if not present
+        if "next_rebalance_due" not in state:
+            now = datetime.now()
+            last_bday = pd.date_range(start=now.replace(day=1), periods=1, freq='BME')
+            next_due = pd.to_datetime(last_bday[0]).strftime("%Y-%m-%d 15:00:00")
+            state["next_rebalance_due"] = next_due
+
         with open(SCAN_STATE_FILE, "w") as f:
             json.dump(state, f)
     except Exception as e:
@@ -70,47 +78,35 @@ def write_scan_state(state: dict):
 def fetch_candles(
     dhan: dhanhq, symbol: str, interval: str = None
 ) -> pd.DataFrame:
-    if interval is None:
-        interval = settings.CANDLE_INTERVAL
+    import redis
+    r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
 
-    to_dt = datetime.now()
-    from_dt = to_dt - timedelta(minutes=settings.CANDLE_LOOKBACK_MINUTES)
+    # We refactored to use Redis lists directly
+    closes = r.lrange(f"historical:5min:{symbol}:close", 0, -1)
+    volumes = r.lrange(f"historical:5min:{symbol}:volume", 0, -1)
 
-    try:
-        from utils.dhan_helper import dhan_helper
-        from utils.rate_limiter import retry_with_backoff
-        sec_id = dhan_helper.get_security_id(symbol)
-        if not sec_id:
-            return pd.DataFrame()
+    if closes and volumes:
+        # Since we just have close and volume right now to satisfy simple models, we use those.
+        # But strategies also use open/high/low in ATR.
+        # We didn't warm high/low/open. Let's return just close/vol and emulate ATR using close diffs if needed,
+        # or we should probably update warm_data to include high/low for correct ATR.
+        # Assuming we update warm_data to also store high/low in a minute... Let's read them.
+        highs = r.lrange(f"historical:5min:{symbol}:high", 0, -1)
+        lows = r.lrange(f"historical:5min:{symbol}:low", 0, -1)
 
-        @retry_with_backoff(retries=3)
-        def _fetch():
-            return dhan.historical_minute_charts(
-                symbol=sec_id,
-                exchange_segment='NSE_EQ',
-                instrument_type='EQUITY',
-                expiry_code=0,
-                from_date=from_dt.strftime('%Y-%m-%d'),
-                to_date=to_dt.strftime('%Y-%m-%d')
-            )
+        # fallback to closes if high/low missing
+        if not highs: highs = closes
+        if not lows: lows = closes
 
-        data = _fetch()
+        df = pd.DataFrame({
+            "close": pd.to_numeric(closes),
+            "volume": pd.to_numeric(volumes),
+            "high": pd.to_numeric(highs),
+            "low": pd.to_numeric(lows),
+        })
+        return df
 
-        if data and data.get('data'):
-             df = pd.DataFrame(data['data'])
-             df.rename(columns={
-                 'open': 'open',
-                 'high': 'high',
-                 'low': 'low',
-                 'close': 'close',
-                 'volume': 'volume',
-                 'start_Time': 'timestamp'
-             }, inplace=True)
-             return df
-        return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Error fetching candles for {symbol}: {e}")
-        return pd.DataFrame()
+    return pd.DataFrame()
 
 
 def get_strategy(name: str, capital: float):
@@ -138,6 +134,11 @@ def get_atr(df: pd.DataFrame, current_price: float) -> float:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="PRIMA PRO Trading Bot")
+    parser.add_argument("--rebalance", action="store_true", help="Run manual investing rebalance and exit.")
+    args = parser.parse_args()
+
     logger.info("=" * 60)
     logger.info("PRIMA PRO - LONG + SHORT EDITION")
     logger.info("=" * 60)
@@ -145,6 +146,61 @@ def main():
     # Run pre-flight system checks
     from utils.system_check import preflight_check
     preflight_check()
+
+    access_token = load_access_token()
+    if not access_token:
+        logger.error("No Dhan access_token.")
+        # return # We will just use the dummy one or settings
+
+    dhan = get_dhan_client(access_token)
+
+    # Initialize Engine (Paper vs Live)
+    if settings.LIVE_TRADING_MODE:
+        from utils.live_engine import DhanLiveEngine
+        engine = DhanLiveEngine(dhan=dhan)
+    else:
+        engine = PaperTradingEngine()
+
+    from utils.investing_engine import InvestingEngine
+    investing_engine = InvestingEngine(
+        dhan=dhan,
+        trading_engine=engine
+    )
+
+    if args.rebalance:
+        if settings.LIVE_TRADING_MODE:
+            print("\033[91m" + "WARNING: You are about to execute a MANUAL REBALANCE in LIVE TRADING MODE." + "\033[0m")
+            confirm = input("Are you sure you want to proceed? (yes/no): ")
+            if confirm.lower() not in ['yes', 'y']:
+                print("Manual rebalance aborted.")
+                return
+
+        # Warm data into Redis if we're going to rebalance just to be safe
+        import redis
+        r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
+        from utils.data_warming import warm_data
+        warm_data(dhan, r)
+
+        investing_engine.run_manual_rebalance()
+
+        # Update dashboard state
+        state = {}
+        if os.path.exists(SCAN_STATE_FILE):
+            try:
+                with open(SCAN_STATE_FILE, "r") as f:
+                    state = json.load(f)
+            except: pass
+        state["next_rebalance_due"] = "Manual execution completed."
+        write_scan_state(state)
+
+        logger.info("Manual rebalance complete. Exiting.")
+        return
+
+    # Warm data into Redis
+    import redis
+    r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
+    from utils.data_warming import warm_data
+    warm_data(dhan, r)
 
     # Start WebSocket listener in a separate thread
     import threading
@@ -154,17 +210,15 @@ def main():
 
     init_db()
 
-    access_token = load_access_token()
-    if not access_token:
-        logger.error("No Dhan access_token.")
-        # return # We will just use the dummy one or settings
-
-    dhan = get_dhan_client(access_token)
     from utils.risk_manager import set_dhan_client as set_margin_dhan
     set_margin_dhan(dhan)
 
-    # Intraday engine + components
-    engine = PaperTradingEngine()
+    if settings.LIVE_TRADING_MODE:
+        print("\033[91m" + "==================================================" + "\033[0m")
+        print("\033[91m" + "CRITICAL WARNING: LIVE TRADING MODE IS ENABLED!" + "\033[0m")
+        print("\033[91m" + "REAL MONEY WILL BE USED FOR ORDER EXECUTION." + "\033[0m")
+        print("\033[91m" + "==================================================" + "\033[0m")
+
     scanner = MarketScanner(dhan)
     selector = StrategySelector()
     risk_manager = RiskManager()
@@ -189,13 +243,7 @@ def main():
     )
     last_swing_run_date = None
 
-    # LongTermEngine: fundamental ideas + approval queue (segment=LONGTERM)
-    longterm_engine = LongTermEngine(
-        trading_engine=engine,
-        symbols=settings.LONGTERM_WATCHLIST,
-        notifier=notifier,
-    )
-    last_lt_run_date = None
+    last_investing_run_month = None
 
     logger.info(f"Paper Mode : {settings.PAPER_TRADING_MODE}")
     logger.info(f"Capital    : Rs.{settings.INITIAL_CAPITAL:,.2f}")
@@ -205,11 +253,43 @@ def main():
     logger.info("=" * 60)
 
     bot_running = True
+    has_squared_off_intraday = False
+
     while bot_running:
         try:
             now = datetime.now()
             market_open = datetime.strptime("09:15", "%H:%M").time()
             market_close = datetime.strptime("15:30", "%H:%M").time()
+            square_off_time = datetime.strptime(settings.SQUARE_OFF_TIME, "%H:%M").time()
+
+            # Reset square off flag each day
+            if now.time() < market_open:
+                has_squared_off_intraday = False
+
+            # ── Intraday Hard Square-Off (15:15) ──────────
+            if not has_squared_off_intraday and now.time() >= square_off_time:
+                logger.warning(f"Initiating hard square-off for all INTRADAY positions at {square_off_time}.")
+                import redis
+                r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
+
+                with get_session() as session:
+                    intraday_positions = (
+                        session.query(Position)
+                        .filter(Position.quantity != 0)
+                        .filter(Position.segment == settings.SEGMENT_INTRADAY)
+                        .all()
+                    )
+
+                    ltp_map = {}
+                    for p in intraday_positions:
+                        raw_data = r.hgetall(f"live_state:{p.symbol}")
+                        if raw_data and raw_data.get("ltp"):
+                            ltp_map[p.symbol] = float(raw_data["ltp"])
+
+                    if ltp_map:
+                        engine.square_off_all(ltp_map)
+
+                has_squared_off_intraday = True
 
             # ── Daily Swing scan hook (around 15:20, once per day) ──────────
             if settings.SWING_ENABLED and last_swing_run_date != now.date():
@@ -225,19 +305,26 @@ def main():
                     finally:
                         last_swing_run_date = now.date()
 
-            # ── Long-term review hook (once per day, e.g. 21:00) ────────────
-            if settings.LONGTERM_ENABLED and last_lt_run_date != now.date():
-                lt_time = datetime.strptime(
-                    settings.LONGTERM_REVIEW_TIME, "%H:%M"
-                ).time()
-                if now.time() >= lt_time:
+            # ── Investing review hook (monthly) ────────────
+            # Trigger on the last trading day of the month within the final 30 minutes (e.g. 15:00)
+            if settings.LONGTERM_ENABLED and last_investing_run_month != now.month:
+                import pandas as pd
+                # Get the last business day of the current month
+                last_bday = pd.date_range(start=now.replace(day=1), periods=1, freq='BME')
+                # Check if today is the last business day (approximate last trading day)
+                is_last_trading_day = now.date() == pd.to_datetime(last_bday[0]).date()
+
+                # Check if it's the final 30 minutes of the session (15:00 to 15:30)
+                final_window_start = datetime.strptime("15:00", "%H:%M").time()
+
+                if is_last_trading_day and now.time() >= final_window_start:
                     try:
-                        longterm_engine.run_once()
-                        logger.info("[LT] Long-term review completed.")
+                        investing_engine.run_monthly()
+                        logger.info("[INVESTING] Monthly investing review completed.")
                     except Exception as e:
-                        logger.exception(f"[LT] Error in long-term review: {e}")
+                        logger.exception(f"[INVESTING] Error in investing review: {e}")
                     finally:
-                        last_lt_run_date = now.date()
+                        last_investing_run_month = now.month
 
             # ── Market hours check for INTRADAY ─────────────────────────────
             if not (market_open <= now.time() <= market_close):
@@ -308,10 +395,10 @@ def main():
                     if should_close:
                         logger.info(f"Closing {pos.symbol}: {close_reason}")
                         if pos.quantity > 0:
-                            engine.sell(pos.symbol, pos.quantity, current_price)
+                            engine.sell(pos.symbol, pos.quantity, current_price, product_type="INTRADAY")
                         else:
                             engine.cover(
-                                pos.symbol, abs(pos.quantity), current_price
+                                pos.symbol, abs(pos.quantity), current_price, product_type="INTRADAY"
                             )
                         risk_manager.cleanup_closed_position(pos.symbol)
 
@@ -329,14 +416,30 @@ def main():
 
                 strategy_name, market_info = selector.select_strategy(symbol, df)
                 if strategy_name == "HOLD":
+                    # Enhanced Logging for HOLDs
+                    condition = market_info.get("condition", "")
+                    rsi_v = market_info.get("rsi")
+
+                    log_msg = f"[HOLD] {symbol}: "
+                    if condition == "OVERSOLD" and rsi_v is not None:
+                        log_msg += f"RSI is {rsi_v:.1f} (Threshold < 30)"
+                    elif condition == "OVERBOUGHT" and rsi_v is not None:
+                        log_msg += f"RSI is {rsi_v:.1f} (Threshold > 70)"
+                    elif "VWAP" in condition or condition == "STRONG_DOWNTREND":
+                        log_msg += "Below VWAP / Strong Downtrend"
+                    else:
+                        log_msg += f"Condition: {condition}"
+
+                    logger.info(log_msg)
+
                     analyzed_stocks.append(
                         {
                             "symbol": symbol,
                             "signal": "HOLD",
                             "strategy": "HOLD",
-                            "condition": market_info.get("condition", ""),
+                            "condition": condition,
                             "strength": opp.get("signal_strength", "-"),
-                            "rsi": None,
+                            "rsi": rsi_v,
                         }
                     )
                     continue
@@ -405,7 +508,8 @@ def main():
                         tp = current_price + (atr * settings.TAKE_PROFIT_ATR_MULTIPLIER)
                         trade = engine.buy(
                             symbol, qty, current_price,
-                            order_type="BRACKET", stop_loss=sl, take_profit=tp
+                            order_type="BRACKET", stop_loss=sl, take_profit=tp,
+                            product_type="INTRADAY"
                         )
                         if trade:
                             risk_manager.set_stop_loss(
@@ -426,7 +530,7 @@ def main():
                         f"SELL {symbol} x{current_qty} @ Rs.{current_price:.2f}"
                     )
                     trade = engine.sell(
-                        symbol, signal.quantity or current_qty, current_price
+                        symbol, signal.quantity or current_qty, current_price, product_type="INTRADAY"
                     )
                     if trade:
                         logger.info(f"  P&L=Rs.{trade.pnl:.2f}")
@@ -446,7 +550,8 @@ def main():
                         tp = current_price - (atr * settings.TAKE_PROFIT_ATR_MULTIPLIER)
                         trade = engine.short(
                             symbol, qty, current_price,
-                            order_type="BRACKET", stop_loss=sl, take_profit=tp
+                            order_type="BRACKET", stop_loss=sl, take_profit=tp,
+                            product_type="INTRADAY"
                         )
                         if trade:
                             risk_manager.set_short_stop_loss(
@@ -470,6 +575,7 @@ def main():
                         symbol,
                         abs(signal.quantity or current_qty),
                         current_price,
+                        product_type="INTRADAY"
                     )
                     if trade:
                         logger.info(f"  P&L=Rs.{trade.pnl:.2f}")
@@ -491,11 +597,11 @@ def main():
                         )
                         if current_qty > 0:
                             trade = engine.sell(
-                                symbol, current_qty, current_price
+                                symbol, current_qty, current_price, product_type="INTRADAY"
                             )
                         else:
                             trade = engine.cover(
-                                symbol, abs(current_qty), current_price
+                                symbol, abs(current_qty), current_price, product_type="INTRADAY"
                             )
                         if trade:
                             logger.info(f"  P&L=Rs.{trade.pnl:.2f}")

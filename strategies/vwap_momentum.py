@@ -26,8 +26,7 @@ class VwapMomentumStrategy(BaseStrategy):
             return Signal("HOLD", reason="Holding short")
 
         # ── No position — check entries ────────────────────────────────
-        if price > vwap_v + atr_v * 0.5 and rsi_v > 55 and qty > 0:
-            return Signal("BUY", qty, f"Price above VWAP+ATR | RSI {rsi_v:.1f}")
-        if price < vwap_v - atr_v * 0.5 and rsi_v < 45 and qty > 0:
-            return Signal("SHORT", qty, f"Price below VWAP-ATR | RSI {rsi_v:.1f}")
+        # Updated Logic: CMP > VWAP and RSI < 30
+        if price > vwap_v and rsi_v < 30 and qty > 0:
+            return Signal("BUY", qty, f"Price > VWAP and RSI ({rsi_v:.1f}) < 30")
         return Signal("HOLD", reason="No setup")

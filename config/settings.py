@@ -48,6 +48,10 @@ POSTGRES_DB = os.getenv("POSTGRES_DB", "trading_db")
 INITIAL_CAPITAL    = 100000   # Rs.1 Lakh starting capital
 PAPER_TRADING_MODE = True
 
+# Live Trading Mode
+LIVE_TRADING_MODE = os.getenv("LIVE_TRADING_MODE", "False").lower() in ("true", "1", "yes")
+MAX_DAILY_LOSS = int(os.getenv("MAX_DAILY_LOSS", 5000))
+
 # Intraday Trading
 # NOTE: INTRADAY_MARGIN_MULTIPLIER is kept ONLY for MAX_INTRADAY_EXPOSURE calc.
 # Per-position sizing now uses POSITION_SIZE_CAPITAL_PCT x per-security leverage
@@ -71,9 +75,7 @@ MIN_POSITION_SIZE: float = 5000     # Rs.5K floor
 # Max concurrent open positions
 MAX_CONCURRENT_POSITIONS: int = 10
 
-# REMOVED: MAX_POSITION_VALUE = 25000
-# Reason: replaced by POSITION_SIZE_CAPITAL_PCT x per-symbol leverage so sizing
-# scales automatically with capital growth/drawdown and real broker margin rates.
+MAX_POSITION_VALUE = 25000
 
 # ---------------------------------------------------------------------------
 # Swing Trading

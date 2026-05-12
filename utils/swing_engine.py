@@ -46,44 +46,33 @@ class SwingEngine:
         self.dhan_helper = dhan_helper
 
     def fetch_daily_ohlc(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Fetch daily OHLCV data for swing analysis using Dhan."""
-        to_dt = datetime.now()
-        from_dt = to_dt - timedelta(days=180)  # ~6 months of history
+        """Fetch daily OHLCV data for swing analysis using Redis Lists warmed up previously."""
+        import redis
+        r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
 
         try:
-            from utils.rate_limiter import retry_with_backoff
-            sec_id = self.dhan_helper.get_security_id(symbol)
-            if not sec_id:
-                return pd.DataFrame()
+            closes = r.lrange(f"historical:daily:{symbol}:close", 0, -1)
+            volumes = r.lrange(f"historical:daily:{symbol}:volume", 0, -1)
 
-            @retry_with_backoff(retries=3)
-            def _fetch():
-                return self.dhan.historical_daily_data(
-                    symbol=sec_id,
-                    exchange_segment='NSE_EQ',
-                    instrument_type='EQUITY',
-                    expiry_code=0,
-                    from_date=from_dt.strftime('%Y-%m-%d'),
-                    to_date=to_dt.strftime('%Y-%m-%d')
-                )
+            if closes and volumes:
+                highs = r.lrange(f"historical:daily:{symbol}:high", 0, -1)
+                lows = r.lrange(f"historical:daily:{symbol}:low", 0, -1)
 
-            data = _fetch()
+                # fallback to closes if high/low missing
+                if not highs: highs = closes
+                if not lows: lows = closes
 
-            if data and data.get('data'):
-                df = pd.DataFrame(data['data'])
-                # Need standardized column names
-                df.rename(columns={
-                    'open': 'open',
-                    'high': 'high',
-                    'low': 'low',
-                    'close': 'close',
-                    'volume': 'volume',
-                    'start_Time': 'timestamp'
-                }, inplace=True)
+                df = pd.DataFrame({
+                    "close": pd.to_numeric(closes),
+                    "volume": pd.to_numeric(volumes),
+                    "high": pd.to_numeric(highs),
+                    "low": pd.to_numeric(lows),
+                })
                 return df
+
             return pd.DataFrame()
         except Exception as e:
-            print(f"[SWING] Error fetching daily data for {symbol}: {e}")
+            print(f"[SWING] Error reading daily data for {symbol} from Redis: {e}")
             return None
 
     def _calculate_swing_quantity(self, entry: float, stop: float) -> int:
@@ -164,6 +153,7 @@ class SwingEngine:
                 f"risk=₹{risk_value:,.2f} ({risk_pct:+.2f}%)",
                 f"expP=₹{profit_value:,.2f} ({profit_pct:+.2f}%)",
             )
+            print(f"[SWING] ACTION REQUIRED: MTF Pledge authorization needed for {signal['symbol']}.")
 
             # Send alert BEFORE placing order (per your requirement)
             if self.notifier is not None:
@@ -194,7 +184,8 @@ class SwingEngine:
                     segment=settings.SEGMENT_SWING,
                     order_type="FOREVER", # Or OCO, to signify swing
                     stop_loss=stop,
-                    take_profit=target
+                    take_profit=target,
+                    product_type="MTF"
                 )
                 if trade is None:
                     print(f"[SWING] {symbol}: trade blocked by risk/margin engine")

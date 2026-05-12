@@ -120,6 +120,8 @@ class RiskManager:
         else:
             leverage = float(margin_multiplier)
 
+        import math
+
         # ── Risk-based sizing (ATR / % stop) ────────────────────────────────
         # How many shares can we afford given our stop-loss risk budget?
         risk_per_share = max(
@@ -127,24 +129,21 @@ class RiskManager:
             entry_price * settings.STOP_LOSS_PCT / 100,
         )
         risk_capital  = available_capital * (settings.POSITION_SIZE_PCT / 100.0)
-        size_by_risk  = int(risk_capital / max(risk_per_share, 0.01))
+        risk_based_size  = int(risk_capital / max(risk_per_share, 0.01))
 
-        # ── Capital-based sizing (DYNAMIC) ──────────────────────────────────
-        # Max notional = 25% of current cash × per-symbol leverage.
-        # This replaces the old static MAX_POSITION_VALUE = 25000 constant.
-        # Benefits:
-        #   - Scales up as capital grows from profitable trades
-        #   - Scales down automatically during drawdown (built-in risk reduction)
-        #   - Respects actual broker margin per symbol (not flat 5x for everyone)
+        # ── Capital-based sizing ──────────────────────────────────
+        cap_based_size = math.floor(settings.MAX_POSITION_VALUE / entry_price)
+
+        # ── Margin-based sizing ──────────────────────────────────
         max_notional = available_capital * settings.POSITION_SIZE_CAPITAL_PCT * leverage
-        size_by_cap  = int(max_notional / entry_price)
+        margin_based_size  = int(max_notional / entry_price)
 
         logger.debug(
-            "[SIZE] %s  risk_size=%d  cap_size=%d  notional_cap=Rs.%.0f  leverage=%.2fx",
-            symbol, size_by_risk, size_by_cap, max_notional, leverage,
+            "[SIZE] %s  risk_size=%d  cap_size=%d  margin_size=%d  notional_margin_cap=Rs.%.0f  leverage=%.2fx",
+            symbol, risk_based_size, cap_based_size, margin_based_size, max_notional, leverage,
         )
 
-        final = min(size_by_risk, size_by_cap)
+        final = min(risk_based_size, cap_based_size, margin_based_size)
 
         if final * entry_price < settings.MIN_POSITION_SIZE:
             logger.debug(
