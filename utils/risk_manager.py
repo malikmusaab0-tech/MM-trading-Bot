@@ -104,9 +104,20 @@ class RiskManager:
         symbol: str,
         entry_price: float,
         atr: float,
-        available_capital: float,
+        available_capital: float, # Note: this should be the total account cash, we apply segment allocation inside
         margin_multiplier: Optional[float] = None,  # kept for back-compat / test overrides
+        segment: str = settings.SEGMENT_INTRADAY
     ) -> int:
+
+        # Determine allocated capital for the segment
+        if segment == settings.SEGMENT_INTRADAY:
+            allocated_capital = available_capital * getattr(settings, 'ALLOCATION_INTRADAY', 1.0)
+        elif segment == settings.SEGMENT_SWING:
+            allocated_capital = available_capital * getattr(settings, 'ALLOCATION_SWING', 1.0)
+        elif segment == settings.SEGMENT_LONGTERM:
+            allocated_capital = available_capital * getattr(settings, 'ALLOCATION_LONGTERM', 1.0)
+        else:
+            allocated_capital = available_capital
 
         # ── Per-security leverage ────────────────────────────────────────────
         if margin_multiplier is None:
@@ -128,14 +139,14 @@ class RiskManager:
             atr * settings.STOP_LOSS_ATR_MULTIPLIER,
             entry_price * settings.STOP_LOSS_PCT / 100,
         )
-        risk_capital  = available_capital * (settings.POSITION_SIZE_PCT / 100.0)
+        risk_capital  = allocated_capital * (settings.POSITION_SIZE_PCT / 100.0)
         risk_based_size  = int(risk_capital / max(risk_per_share, 0.01))
 
         # ── Capital-based sizing ──────────────────────────────────
         cap_based_size = math.floor(settings.MAX_POSITION_VALUE / entry_price)
 
         # ── Margin-based sizing ──────────────────────────────────
-        max_notional = available_capital * settings.POSITION_SIZE_CAPITAL_PCT * leverage
+        max_notional = allocated_capital * settings.POSITION_SIZE_CAPITAL_PCT * leverage
         margin_based_size  = int(max_notional / entry_price)
 
         logger.debug(
@@ -144,13 +155,17 @@ class RiskManager:
         )
 
         final = min(risk_based_size, cap_based_size, margin_based_size)
+        notional_value = final * entry_price
 
-        if final * entry_price < settings.MIN_POSITION_SIZE:
-            logger.debug(
-                "[SIZE] %s  rejected — notional Rs.%.0f < MIN Rs.%.0f",
-                symbol, final * entry_price, settings.MIN_POSITION_SIZE,
+        if notional_value < settings.MIN_POSITION_SIZE:
+            logger.warning(
+                f"[SIZE VETO] {symbol} rejected. Computed notional Rs.{notional_value:,.0f} "
+                f"is below MIN_POSITION_SIZE Rs.{settings.MIN_POSITION_SIZE:,.0f}. "
+                f"(risk_size={risk_based_size}, cap_size={cap_based_size}, margin_size={margin_based_size})"
             )
             return 0
+
+        logger.info(f"[SIZE OK] {symbol} qty={final} (notional: Rs.{notional_value:,.0f})")
         return max(1, final)
 
     # ------------------------------------------------------------------

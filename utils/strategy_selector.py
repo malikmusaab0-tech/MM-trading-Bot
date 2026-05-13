@@ -25,56 +25,69 @@ class StrategySelector:
     def analyze_market_condition(self, df: pd.DataFrame) -> dict:
         """Analyze current market condition. Returns safe defaults on any error."""
         fallback = {"condition": "UNKNOWN"}
-        if df.empty or len(df) < 20:
+
+        # Read from settings dynamically
+        min_candles = getattr(settings, 'REGIME_MIN_CANDLES', 10)
+        trend_thresh = getattr(settings, 'REGIME_TREND_STRENGTH_MIN', 0.8)
+        vol_thresh = getattr(settings, 'REGIME_VOLATILITY_PCT_MIN', 2.0)
+        oversold = getattr(settings, 'REGIME_RSI_OVERSOLD', 35)
+        overbought = getattr(settings, 'REGIME_RSI_OVERBOUGHT', 65)
+
+        if df.empty or len(df) < min_candles:
             return fallback
+
         try:
             close  = df["close"]
             high   = df["high"]
             low    = df["low"]
             volume = df["volume"]
 
+            # Adjust lookback window based on available data size
+            lookback = min(14, len(df) - 1)
+
             # Trend strength
             price_change   = close.diff().abs()
-            volatility     = price_change.rolling(14).std() + 1e-9
-            trend_strength = (price_change.rolling(14).mean() / volatility).iloc[-1]
+            volatility     = price_change.rolling(lookback).std() + 1e-9
+            trend_strength = (price_change.rolling(lookback).mean() / volatility).iloc[-1]
 
             # Trend direction
-            sma20      = close.rolling(20).mean()
-            sma50      = close.rolling(min(50, len(df))).mean()
-            is_uptrend = close.iloc[-1] > sma20.iloc[-1] and sma20.iloc[-1] > sma50.iloc[-1]
-            is_downtrend = close.iloc[-1] < sma20.iloc[-1] and sma20.iloc[-1] < sma50.iloc[-1]
+            sma_fast = close.rolling(min(20, len(df))).mean()
+            sma_slow = close.rolling(min(50, len(df))).mean()
+
+            # Using basic SMA checks for trend to avoid NaN issues with limited data
+            is_uptrend = close.iloc[-1] > sma_fast.iloc[-1] and (sma_fast.iloc[-1] > sma_slow.iloc[-1] or len(df) < 50)
+            is_downtrend = close.iloc[-1] < sma_fast.iloc[-1] and (sma_fast.iloc[-1] < sma_slow.iloc[-1] or len(df) < 50)
 
             # ATR volatility %
             hl  = high - low
             hcp = (high - close.shift()).abs()
             lcp = (low  - close.shift()).abs()
-            atr = pd.concat([hl, hcp, lcp], axis=1).max(axis=1).rolling(14).mean()
+            atr = pd.concat([hl, hcp, lcp], axis=1).max(axis=1).rolling(lookback).mean()
             vol_pct = atr.iloc[-1] / close.iloc[-1] * 100
 
             # RSI
             delta = close.diff()
-            gain  = delta.where(delta > 0, 0).rolling(14).mean()
-            loss  = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            gain  = delta.where(delta > 0, 0).rolling(lookback).mean()
+            loss  = (-delta.where(delta < 0, 0)).rolling(lookback).mean()
             rsi   = (100 - 100 / (1 + gain / (loss + 1e-9))).iloc[-1]
 
             # Volume ratio
-            vol_ratio = volume.iloc[-1] / (volume.rolling(20).mean().iloc[-1] + 1e-9)
+            vol_ratio = volume.iloc[-1] / (volume.rolling(lookback).mean().iloc[-1] + 1e-9)
 
-            # FIX: lowered threshold 1.5 → 1.0 so normal trending days are caught
-            if trend_strength > 1.0:
+            if trend_strength > trend_thresh:
                 if is_uptrend:
                     condition = "STRONG_UPTREND"
                 elif is_downtrend:
                     condition = "STRONG_DOWNTREND"
                 else:
                     condition = "TRENDING"
-            elif vol_pct > 3:
+            elif vol_pct > vol_thresh:
                 condition = "HIGH_VOLATILITY"
-            elif rsi < 35:
+            elif rsi < oversold:
                 condition = "OVERSOLD"
-            elif rsi > 65:
+            elif rsi > overbought:
                 condition = "OVERBOUGHT"
-            elif abs(close.iloc[-1] - sma20.iloc[-1]) / (sma20.iloc[-1] + 1e-9) < 0.01:
+            elif abs(close.iloc[-1] - sma_fast.iloc[-1]) / (sma_fast.iloc[-1] + 1e-9) < 0.01:
                 condition = "RANGING"
             else:
                 condition = "NEUTRAL"
