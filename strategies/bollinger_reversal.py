@@ -1,14 +1,16 @@
 from strategies.base_strategy import BaseStrategy, Signal
 
 class BollingerReversalStrategy(BaseStrategy):
-    def generate_signal(self, symbol, df, current_position_qty, entry_price=None):
+    def generate_signal(self, symbol, df, current_position_qty, entry_price=None, **kwargs):
+        bb_std_dev = kwargs.get("bb_std_dev", 2.0)
+
         if len(df) < 20:
             return Signal("HOLD", reason="Not enough data")
         close  = df["close"]
         sma    = close.rolling(20).mean()
         std    = close.rolling(20).std()
-        upper  = sma + 2 * std
-        lower  = sma - 2 * std
+        upper  = sma + bb_std_dev * std
+        lower  = sma - bb_std_dev * std
         price  = close.iloc[-1]
         rsi_v  = self.rsi(close).iloc[-1]
         atr_v  = self.atr(df).iloc[-1]
