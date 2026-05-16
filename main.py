@@ -609,6 +609,8 @@ def main():
                         if trade:
                             logger.info(f"  P&L=Rs.{trade.pnl:.2f}")
                         risk_manager.cleanup_closed_position(symbol)
+                else:
+                    logger.debug(f"[HOLD] {symbol} @ {current_price:.2f} — no open position")
 
             # ── Session Observability / Metrics (PRI-13, PRI-14) ─────────
             from collections import Counter

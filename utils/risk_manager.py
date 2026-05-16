@@ -143,29 +143,32 @@ class RiskManager:
         risk_based_size  = int(risk_capital / max(risk_per_share, 0.01))
 
         # ── Capital-based sizing ──────────────────────────────────
-        cap_based_size = math.floor(settings.MAX_POSITION_VALUE / entry_price)
+        # Derived from per-trade capital limit directly, before risk layer
+        cap_based_size = math.floor(settings.MAX_POSITION_VALUE / max(entry_price, 0.01))
 
         # ── Margin-based sizing ──────────────────────────────────
-        max_notional = allocated_capital * settings.POSITION_SIZE_CAPITAL_PCT * leverage
-        margin_based_size  = int(max_notional / entry_price)
-
-        logger.debug(
-            "[SIZE] %s  risk_size=%d  cap_size=%d  margin_size=%d  notional_margin_cap=Rs.%.0f  leverage=%.2fx",
-            symbol, risk_based_size, cap_based_size, margin_based_size, max_notional, leverage,
-        )
+        # Notional sizing bounds
+        max_notional_with_margin = allocated_capital * leverage
+        margin_based_size  = int(max_notional_with_margin / max(entry_price, 0.01))
 
         final = min(risk_based_size, cap_based_size, margin_based_size)
-        notional_value = final * entry_price
 
-        if notional_value < settings.MIN_POSITION_SIZE:
-            logger.warning(
-                f"[SIZE VETO] {symbol} rejected. Computed notional Rs.{notional_value:,.0f} "
-                f"is below MIN_POSITION_SIZE Rs.{settings.MIN_POSITION_SIZE:,.0f}. "
-                f"(risk_size={risk_based_size}, cap_size={cap_based_size}, margin_size={margin_based_size})"
+        if final <= 0 or final * entry_price < settings.MIN_POSITION_SIZE:
+            logger.info(
+                f"[RISK_VETO] {symbol} qty=0  "
+                f"(entry={entry_price:.2f}  "
+                f"risk_size={risk_based_size}  "
+                f"cap_size={cap_based_size}  "
+                f"margin_size={margin_based_size})"
             )
             return 0
 
-        logger.info(f"[SIZE OK] {symbol} qty={final} (notional: Rs.{notional_value:,.0f})")
+        notional = final * entry_price
+        logger.info(
+            f"[SIZE] {symbol} qty={final}  notional=₹{notional:,.0f}  "
+            f"(risk_size={risk_based_size}  cap_size={cap_based_size}  "
+            f"margin_size={margin_based_size})"
+        )
         return max(1, final)
 
     # ------------------------------------------------------------------
@@ -301,9 +304,15 @@ class RiskManager:
 
     def can_open_new_position(self):
         m = self.get_portfolio_risk()
-        if m["at_max_positions"]:      return False, "MAX_POSITIONS_REACHED"
-        if m["margin_used_pct"] >= 95: return False, "MARGIN_LIMIT"
-        if self.is_square_off_time():  return False, "SQUARE_OFF_TIME"
+        if m["at_max_positions"]:
+            logger.warning("[RISK_VETO] Cannot open new position: MAX_POSITIONS_REACHED")
+            return False, "MAX_POSITIONS_REACHED"
+        if m["margin_used_pct"] >= 95:
+            logger.warning(f"[RISK_VETO] Cannot open new position: MARGIN_LIMIT ({m['margin_used_pct']}%)")
+            return False, "MARGIN_LIMIT"
+        if self.is_square_off_time():
+            logger.warning("[RISK_VETO] Cannot open new position: SQUARE_OFF_TIME")
+            return False, "SQUARE_OFF_TIME"
         return True, "OK"
 
     def cleanup_closed_position(self, symbol):
