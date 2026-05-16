@@ -90,7 +90,26 @@ class StrategySelector:
             elif abs(close.iloc[-1] - sma_fast.iloc[-1]) / (sma_fast.iloc[-1] + 1e-9) < 0.01:
                 condition = "RANGING"
             else:
-                condition = "NEUTRAL"
+                # Priority 12 fix: ADX 14-period fallback to minimize UNKNOWN/NEUTRAL
+                try:
+                    import pandas_ta as ta
+                    adx_df = ta.adx(high, low, close, length=14)
+                    if adx_df is not None and not adx_df.empty:
+                        adx_val = adx_df.iloc[-1, 0]
+                        if pd.notna(adx_val):
+                            if adx_val > 25:
+                                condition = "TRENDING"
+                            elif adx_val < 20:
+                                condition = "RANGING"
+                            else:
+                                condition = "NEUTRAL"
+                        else:
+                            condition = "NEUTRAL"
+                    else:
+                        condition = "NEUTRAL"
+                except Exception as e:
+                    logger.debug(f"ADX fallback failed: {e}")
+                    condition = "NEUTRAL"
 
             return {
                 "condition":     condition,
