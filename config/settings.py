@@ -48,9 +48,17 @@ POSTGRES_DB = os.getenv("POSTGRES_DB", "trading_db")
 INITIAL_CAPITAL    = 100000   # Rs.1 Lakh starting capital
 PAPER_TRADING_MODE = True
 
-# Live Trading Mode
+# Safe mode guardrail: If LIVE_TRADING_MODE is True, PAPER_TRADING_MODE MUST be False
 LIVE_TRADING_MODE = os.getenv("LIVE_TRADING_MODE", "False").lower() in ("true", "1", "yes")
+if LIVE_TRADING_MODE:
+    PAPER_TRADING_MODE = False
+
 MAX_DAILY_LOSS = int(os.getenv("MAX_DAILY_LOSS", 5000))
+
+# Segment Capital Allocation (Percentages must sum to <= 1.0)
+ALLOCATION_INTRADAY = 0.50
+ALLOCATION_SWING    = 0.30
+ALLOCATION_LONGTERM = 0.20
 
 # Intraday Trading
 # NOTE: INTRADAY_MARGIN_MULTIPLIER is kept ONLY for MAX_INTRADAY_EXPOSURE calc.
@@ -116,6 +124,15 @@ MIN_STOCK_PRICE      = 10
 MAX_STOCK_PRICE      = 50000
 MIN_VOLUME           = 100000
 MIN_LIQUIDITY_CRORE  = 1
+
+# ---------------------------------------------------------------------------
+# Regime Detection / Strategy Thresholds (PRI-10 / PRI-12)
+# ---------------------------------------------------------------------------
+REGIME_MIN_CANDLES         = 10   # Reduced from 20 to classify earlier in session
+REGIME_TREND_STRENGTH_MIN  = 0.8  # Reduced from 1.0 to capture subtle emerging trends
+REGIME_VOLATILITY_PCT_MIN  = 2.0  # Reduced from 3.0 to acknowledge volatile Nifty environments
+REGIME_RSI_OVERSOLD        = 35   # Allow slight momentum buildup
+REGIME_RSI_OVERBOUGHT      = 65
 
 # ---------------------------------------------------------------------------
 # Indicators

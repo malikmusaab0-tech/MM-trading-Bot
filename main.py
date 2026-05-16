@@ -147,6 +147,10 @@ def main():
     from utils.system_check import preflight_check
     preflight_check()
 
+    # Run configuration validation
+    from utils.config_validation import validate_config
+    validate_config()
+
     access_token = load_access_token()
     if not access_token:
         logger.error("No Dhan access_token.")
@@ -491,14 +495,14 @@ def main():
                 # Check can_open PER SYMBOL
                 can_open, open_reason = risk_manager.can_open_new_position()
 
+                if signal.action in ["BUY", "SHORT"] and not can_open:
+                    logger.info(f"[{signal.action} VETO] {symbol} blocked: {open_reason}")
+
                 # ── BUY — long entry ─────────────────────────────────────────
                 if signal.action == "BUY" and current_qty == 0 and can_open:
                     qty = risk_manager.calculate_position_size(
                         symbol, current_price, atr, engine.cash
                     )
-                    # No separate MAX_POSITION_VALUE guard needed.
-                    # Sizing is already capped at:
-                    #   POSITION_SIZE_CAPITAL_PCT (25%) x cash x per-symbol leverage
                     if qty > 0:
                         logger.info(
                             f"BUY {symbol} x{qty} @ Rs.{current_price:.2f}  "
@@ -519,9 +523,8 @@ def main():
                                 symbol, current_price, atr
                             )
                     else:
-                        logger.info(
-                            f"[SIZE] {symbol} BUY skipped — qty=0 "
-                            f"(price too high or below MIN_POSITION_SIZE)"
+                        logger.warning(
+                            f"[SIZE VETO] {symbol} BUY skipped — qty=0 after risk/cap sizing checks."
                         )
 
                 # ── SELL — long exit ─────────────────────────────────────────
@@ -561,8 +564,8 @@ def main():
                                 symbol, current_price, atr
                             )
                     else:
-                        logger.info(
-                            f"[SIZE] {symbol} SHORT skipped — qty=0 after sizing"
+                        logger.warning(
+                            f"[SIZE VETO] {symbol} SHORT skipped — qty=0 after risk/cap sizing checks."
                         )
 
                 # ── COVER — short exit ───────────────────────────────────────
@@ -607,6 +610,19 @@ def main():
                             logger.info(f"  P&L=Rs.{trade.pnl:.2f}")
                         risk_manager.cleanup_closed_position(symbol)
 
+            # ── Session Observability / Metrics (PRI-13, PRI-14) ─────────
+            from collections import Counter
+
+            action_counts = Counter(s.get("signal") for s in analyzed_stocks)
+            strategy_counts = Counter(s.get("strategy") for s in analyzed_stocks)
+            condition_counts = Counter(s.get("condition") for s in analyzed_stocks)
+
+            logger.info("─── Scan Summary ───")
+            logger.info(f"Regimes: {dict(condition_counts)}")
+            logger.info(f"Strategies: {dict(strategy_counts)}")
+            logger.info(f"Actions: {dict(action_counts)}")
+            logger.info("────────────────────")
+
             # ── Final scan state / unrealized P&L update ─────────────────────
             write_scan_state(
                 {
@@ -615,6 +631,11 @@ def main():
                     "liquidcount": len(opportunities),
                     "oppcount": len(opportunities),
                     "stocks": analyzed_stocks,
+                    "metrics": {
+                        "actions": dict(action_counts),
+                        "strategies": dict(strategy_counts),
+                        "regimes": dict(condition_counts)
+                    }
                 }
             )
 
