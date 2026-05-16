@@ -10,16 +10,18 @@ class RsiReversalStrategy(BaseStrategy):
         atr_v   = self.atr(df).iloc[-1]
         price   = close.iloc[-1]
         qty     = self.position_size(price, atr_v)
-        bounce_up   = rsi_prv < 30 and rsi_now >= 30
-        reject_down = rsi_prv > 70 and rsi_now <= 70
+
+        # Widen oversold/overbought thresholds (35 and 65)
+        bounce_up   = rsi_prv < 35 and rsi_now >= 35
+        reject_down = rsi_prv > 65 and rsi_now <= 65
 
         if current_position_qty > 0:
-            if rsi_now > 70:
+            if rsi_now > 65:
                 return Signal("SELL", current_position_qty, f"RSI overbought {rsi_now:.1f}")
             return Signal("HOLD", reason="Long active")
 
         if current_position_qty < 0:
-            if rsi_now < 30:
+            if rsi_now < 35:
                 return Signal("COVER", abs(current_position_qty), f"RSI oversold {rsi_now:.1f}")
             return Signal("HOLD", reason="Short active")
 
