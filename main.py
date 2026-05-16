@@ -257,6 +257,13 @@ def main():
     logger.info("=" * 60)
 
     bot_running = True
+    # ── Before your scan loop starts — load the model once ─────────────────────
+    if not classifier.load():
+        logger.warning(
+            "Regime model not found — all symbols will use default strategy params. "
+            "Train offline with: python -m ml.train_regimes"
+        )
+
     has_squared_off_intraday = False
 
     while bot_running:
