@@ -75,15 +75,15 @@ SQUARE_OFF_TIME = "15:15"
 POSITION_SIZE_CAPITAL_PCT: float = 0.25
 
 # Per-trade stop-risk as % of available capital (for risk-based sizing leg)
-POSITION_SIZE_PCT: int = 2          # 2% of capital at risk per trade
+POSITION_SIZE_PCT: float = 5.0      # Risk allocation per asset
 
 # Minimum notional value to bother placing an order
-MIN_POSITION_SIZE: float = 5000     # Rs.5K floor
+MIN_POSITION_SIZE: float = 500      # Minimum INR notional required to trade
 
 # Max concurrent open positions
 MAX_CONCURRENT_POSITIONS: int = 10
 
-MAX_POSITION_VALUE = 25000
+MAX_POSITION_VALUE: float = 25000   # Max INR notional per position
 
 # ---------------------------------------------------------------------------
 # Swing Trading
@@ -111,7 +111,7 @@ LONGTERM_NOTIFICATIONS_ENABLED     = True
 # Risk Management
 # ---------------------------------------------------------------------------
 STOP_LOSS_PCT                 = 1.5
-STOP_LOSS_ATR_MULTIPLIER      = 1.0
+STOP_LOSS_ATR_MULTIPLIER      = 1.5
 TAKE_PROFIT_ATR_MULTIPLIER    = 2.0
 TRAILING_STOP_ACTIVATION_PCT  = 1.0
 TRAILING_STOP_DISTANCE_PCT    = 0.5
@@ -119,6 +119,8 @@ TRAILING_STOP_DISTANCE_PCT    = 0.5
 # ---------------------------------------------------------------------------
 # Market Scanning
 # ---------------------------------------------------------------------------
+SCAN_INTERVAL_SECONDS = 60
+
 SCAN_ENTIRE_MARKET   = True
 MIN_STOCK_PRICE      = 10
 MAX_STOCK_PRICE      = 50000

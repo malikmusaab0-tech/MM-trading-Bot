@@ -7,7 +7,7 @@ import redis
 
 from config import settings
 from utils.paper_trading import PaperTradingEngine
-from strategies.investing_momentum import InvestingMomentumStrategy
+from strategies.long_term_investing import LongTermInvestingStrategy
 from utils.nifty_100_symbols import NIFTY_100_SYMBOLS
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ class InvestingEngine:
     def __init__(self, dhan: dhanhq, trading_engine: PaperTradingEngine):
         self.dhan = dhan
         self.engine = trading_engine
-        self.strategy = InvestingMomentumStrategy()
+        self.strategy = LongTermInvestingStrategy()
 
     def fetch_historical_data(self, r: redis.Redis) -> dict:
         dfs = {}
@@ -50,28 +50,23 @@ class InvestingEngine:
             logger.warning("[INVESTING] No sufficient historical daily data found in Redis for momentum calculation.")
             return
 
-        top_stocks = self.strategy.calculate_momentum_score(dfs)
+        allocations = self.strategy.rank_and_allocate(dfs, top_n=30)
 
-        if not top_stocks:
+        if not allocations:
             logger.info("[INVESTING] No stocks qualified for investing strategy.")
             return
 
-        logger.info(f"[INVESTING] Top {len(top_stocks)} stocks selected.")
+        logger.info(f"[INVESTING] {len(allocations)} stocks selected for allocation.")
 
-        # Calculate allocation per stock
-        investing_capital = self.engine.cash * (settings.LONGTERM_MAX_RISK_PER_TRADE_PCT * 10 / 100) # Or define a specific allocation
-        # Simple allocation: equal weight of 10% total capital per stock
-        allocation_per_stock = self.engine.cash * 0.10
+        investing_capital = self.engine.cash * getattr(settings, 'ALLOCATION_LONGTERM', 0.20)
 
-        for stock in top_stocks:
-            symbol = stock['symbol']
-            price = stock['price']
-            score = stock['score']
-
-            qty = floor(allocation_per_stock / price)
+        for symbol, weight in allocations.items():
+            price = dfs[symbol]["close"].iloc[-1]
+            allocation_value = investing_capital * weight
+            qty = floor(allocation_value / price)
 
             if qty > 0:
-                logger.info(f"[INVESTING] BUY {symbol} x{qty} @ Rs.{price:.2f} | Score: {score:.2f}")
+                logger.info(f"[INVESTING] BUY {symbol} x{qty} @ Rs.{price:.2f} | Weight: {weight*100:.2f}%")
                 # Execute CNC Delivery order
                 self.engine.buy(
                     symbol=symbol,

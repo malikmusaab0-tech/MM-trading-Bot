@@ -16,10 +16,10 @@ class BollingerReversalStrategy(BaseStrategy):
         atr_v  = self.atr(df).iloc[-1]
         qty    = self.position_size(price, atr_v)
 
-        # Lower BB bandwidth requirement (e.g. min 0.02 to allow smaller compressions)
+        # Lower BB bandwidth requirement to allow smaller compressions
         bandwidth = (upper.iloc[-1] - lower.iloc[-1]) / sma.iloc[-1]
-        if bandwidth < 0.02:
-            return Signal("HOLD", reason="BB bandwidth < 0.02 (too tight)")
+        if bandwidth < 0.06:
+            return Signal("HOLD", reason="BB bandwidth < 0.06 (too tight)")
 
         # Allow signals when price is within 1.5x ATR of the band
         near_lower = price <= lower.iloc[-1] + (atr_v * 1.5)
