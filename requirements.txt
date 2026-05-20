@@ -22,3 +22,4 @@ pandas-ta>=0.3.14b
 APScheduler>=3.10.0
 loguru>=0.7.0
 pytest>=7.4.0
+asyncpg>=0.29.0

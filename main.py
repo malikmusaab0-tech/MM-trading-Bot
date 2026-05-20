@@ -30,7 +30,6 @@ from strategies.macd_momentum import MacdMomentumStrategy
 from strategies.volume_breakout import VolumeBreakoutStrategy
 from strategies.atr_breakout import AtrBreakoutStrategy
 from strategies.base_strategy import Signal
-from ml.regime_classifier import classifier
 
 
 # ── Logging (Windows CP1252 safe) ─────────────────────────────────────────────
@@ -143,10 +142,9 @@ def signal_handler(sig, frame):
     bot_running = False
 
 def main():
-    import signal as os_signal
     global bot_running
-    os_signal.signal(os_signal.SIGINT, signal_handler)
-    os_signal.signal(os_signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     import argparse
     parser = argparse.ArgumentParser(description="PRIMA PRO Trading Bot")
@@ -693,27 +691,13 @@ def main():
 
     # Clean up gracefully
     logger.info("Flushing transient caches and closing connection pools...")
-    try:
-        # Flush DB 0 (which has our ticks and live_state logic)
-        r.flushdb()
-    except Exception as e:
-        logger.error(f"Error flushing Redis caches: {e}")
-
-    try:
-        from data.database import engine as db_engine
-        db_engine.dispose()
-    except Exception as e:
-        logger.error(f"Error disposing DB connection pool: {e}")
 
     # Save final scan state
     try:
-        m = risk_manager.get_portfolio_risk()
         write_scan_state({
             "scanning": False,
             "status": "STOPPED",
-            "lastscan": datetime.now().strftime("%H:%M:%S"),
-            "active_positions": m.get("total_positions", 0),
-            "unrealized_pnl": m.get("unrealized_pnl", 0.0),
+            "lastscan": datetime.now().strftime("%H:%M:%S")
         })
     except Exception as e:
         logger.error(f"Error saving final state: {e}")
