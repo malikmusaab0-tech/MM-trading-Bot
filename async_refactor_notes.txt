@@ -1,0 +1,66 @@
+The user prompt says:
+"Task 1 — Complete main.py HOLD block
+In main.py, inside the main scan loop after the COVER block, add the following HOLD/manage logic:
+...
+                    else:
+                        logger.debug(f"[HOLD] {symbol} @ {current_price:.2f} — no open position")
+
+            except Exception as e:
+                logger.exception(f"Error processing {symbol}: {e}")
+                continue
+...
+"
+
+Looking at my `main.py`, I already have a highly sophisticated, database-driven HOLD and trailing-stop block!
+```python
+                # ── HOLD — manage trailing stops on existing positions ────────
+                elif current_qty != 0:
+                    risk_manager.update_trailing_stop(
+                        symbol, current_price, entry_price
+                    )
+                    should_close, close_reason = (
+                        risk_manager.should_close_position(
+                            symbol, current_price, entry_price
+                        )
+                    )
+                    if should_close:
+                        logger.info(
+                            f"Auto-close {symbol}: {close_reason}"
+                        )
+                        if current_qty > 0:
+                            trade = engine.sell(
+                                symbol, current_qty, current_price, product_type="INTRADAY"
+                            )
+                        else:
+                            trade = engine.cover(
+                                symbol, abs(current_qty), current_price, product_type="INTRADAY"
+                            )
+                        if trade:
+                            logger.info(f"  P&L=Rs.{trade.pnl:.2f}")
+                        risk_manager.cleanup_closed_position(symbol)
+```
+The ONLY thing missing is the explicit print for when `current_qty == 0` that the user requested: `logger.debug(f"[HOLD] {symbol} @ {current_price:.2f} — no open position")`
+
+Wait, if we look at the `else:` clause in the user's prompt, it's just:
+```python
+                    else:
+                        logger.debug(f"[HOLD] {symbol} @ {current_price:.2f} — no open position")
+```
+
+I will add that `else:` block to log the HOLD when there's no position. I'll also double check the `scan_state` logic at the end of the loop, since the prompt specifies:
+```python
+        scan_state = {
+            "last_scan": datetime.now().isoformat(),
+            "open_positions": len(open_positions),
+            "unrealized_pnl": round(unrealized, 2),
+        }
+        try:
+            with open("scan_state.json", "w") as f:
+                import json
+                json.dump(scan_state, f)
+        except Exception as e:
+            logger.warning(f"Could not write scan_state.json: {e}")
+```
+My code already writes `scan_state` properly through `write_scan_state(state)` with `next_rebalance_due`.
+
+I will cleanly inject the missing `else:` logging statement.

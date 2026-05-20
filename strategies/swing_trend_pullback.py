@@ -74,13 +74,19 @@ class SwingTrendPullbackStrategy:
         ema_trend = float(last["ema_trend"])
         ema_pullback = float(last["ema_pullback"])
 
+        # New swing logic: current volume > 2x 10-day average volume
+        current_volume = float(last["volume"])
+        avg_volume_10 = float(df["volume"].rolling(10).mean().iloc[-2]) if len(df) >= 10 else 0
+
         # Simple long-side logic:
         # - Uptrend: price above trend EMA
         # - Pullback: price near or slightly below pullback EMA, but trend intact
+        # - High Volume: current volume > 2x 10-day avg volume
         in_uptrend = close > ema_trend
         pulled_back = close <= ema_pullback * 1.01  # within +1% of pullback EMA
+        high_volume = current_volume > 2 * avg_volume_10
 
-        if in_uptrend and pulled_back:
+        if in_uptrend and pulled_back and high_volume:
             # Use recent swing low (last N bars) as stop
             lookback = df.tail(10)
             swing_low = float(lookback["low"].min())

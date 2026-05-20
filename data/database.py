@@ -1,15 +1,14 @@
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, DateTime, Boolean
+    create_engine, Column, Integer, String, Float, DateTime, Boolean, Index
 )
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker, synonym
 from datetime import datetime
-from config.settings import DATABASE_PATH, SEGMENT_INTRADAY
+from config.settings import DATABASE_PATH, SEGMENT_INTRADAY, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
 
-DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
+DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
     echo=False,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -18,17 +17,35 @@ Base = declarative_base()
 
 class Trade(Base):
     __tablename__ = "trades"
+    # To match user expected log structure for queries
+    # While maintaining backwards compatibility with engine code
 
-    id = Column(Integer, primary_key=True, index=True)
+    trade_id = Column("id", Integer, primary_key=True, index=True)
+    id = synonym("trade_id")
+
     symbol = Column(String, index=True)
     side = Column(String)  # BUY / SELL / SHORT / COVER
+    strategy_type = Column("segment", String, default=SEGMENT_INTRADAY, index=True) # Renamed attribute, column remains segment
+    segment = synonym("strategy_type")
+
     quantity = Column(Integer)
     price = Column(Float)
+    entry_price = synonym("price")
+    exit_price = Column(Float, nullable=True)
+
     timestamp = Column(DateTime, default=datetime.utcnow)
+    entry_time = synonym("timestamp")
+    exit_time = Column(DateTime, nullable=True)
+
     pnl = Column(Float, default=0.0)
     paper = Column(Boolean, default=True)
-    # New: which segment created this trade (INTRADAY / SWING / LONGTERM)
-    segment = Column(String, default=SEGMENT_INTRADAY, index=True)
+
+    order_type = Column(String, nullable=True) # REGULAR, BRACKET, FOREVER
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
+    product_type = Column(String, nullable=True) # INTRADAY, MTF
+    is_mtf = Column(Boolean, default=False, index=True)
+    pledge_status = Column(String, default="PENDING")
 
 
 class Position(Base):
@@ -51,6 +68,25 @@ class PortfolioSnapshot(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     equity = Column(Float)
     cash = Column(Float)
+    unrealized_pnl = Column(Float, default=0.0)
+    realized_pnl_day = Column(Float, default=0.0)
+
+class HistoricalData(Base):
+    __tablename__ = "historical_data"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=False) # Will use composite index below
+    timestamp = Column(DateTime, index=False)
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)
+    interval = Column(String)  # e.g., '5min', 'daily'
+
+    __table_args__ = (
+        Index('ix_historical_data_symbol_timestamp', 'symbol', 'timestamp'),
+    )
 
 class Fundamentals(Base):
     __tablename__ = "fundamentals"
@@ -131,3 +167,26 @@ def get_session():
         raise
     finally:
         session.close()  # crucial: returns connection to pool
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from contextlib import asynccontextmanager
+
+ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+
+async_engine = create_async_engine(
+    ASYNC_DATABASE_URL,
+    echo=False,
+)
+AsyncSessionLocal = sessionmaker(bind=async_engine, class_=AsyncSession, expire_on_commit=False)
+
+@asynccontextmanager
+async def get_async_session():
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from math import floor
 
 import pandas as pd
-from kiteconnect import KiteConnect
+from dhanhq import dhanhq
 
 from config import settings
 from strategies.swing_trend_pullback import SwingTrendPullbackStrategy
@@ -20,7 +20,7 @@ from utils.notification_service import NotificationService
 class SwingEngine:
     def __init__(
         self,
-        kite: KiteConnect,
+        dhan: dhanhq,
         trading_engine: PaperTradingEngine,
         symbols: List[str],
         notifier: Optional[NotificationService] = None,
@@ -28,8 +28,8 @@ class SwingEngine:
         """
         Parameters
         ----------
-        kite : KiteConnect
-            Authenticated KiteConnect client.
+        dhan : dhanhq
+            Authenticated dhan client.
         trading_engine : PaperTradingEngine
             Shared paper trading engine instance (uses common cash ledger).
         symbols : list[str]
@@ -37,32 +37,42 @@ class SwingEngine:
         notifier : NotificationService or None
             For sending pre-trade alerts (Telegram, later WhatsApp).
         """
-        self.kite = kite
+        self.dhan = dhan
         self.engine = trading_engine
         self.symbols = symbols
         self.strategy = SwingTrendPullbackStrategy()
         self.notifier = notifier
+        from utils.dhan_helper import dhan_helper
+        self.dhan_helper = dhan_helper
 
     def fetch_daily_ohlc(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Fetch daily OHLCV data for swing analysis."""
-        to_dt = datetime.now()
-        from_dt = to_dt - timedelta(days=180)  # ~6 months of history
+        """Fetch daily OHLCV data for swing analysis using Redis Lists warmed up previously."""
+        import redis
+        r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
 
         try:
-            q = self.kite.quote(f"NSE:{symbol}")
-            token = q[f"NSE:{symbol}"]["instrument_token"]
+            closes = r.lrange(f"historical:daily:{symbol}:close", 0, -1)
+            volumes = r.lrange(f"historical:daily:{symbol}:volume", 0, -1)
 
-            data = self.kite.historical_data(
-                instrument_token=token,
-                from_date=from_dt,
-                to_date=to_dt,
-                interval="day",
-                continuous=False,
-                oi=False,
-            )
-            return pd.DataFrame(data) if data else pd.DataFrame()
+            if closes and volumes:
+                highs = r.lrange(f"historical:daily:{symbol}:high", 0, -1)
+                lows = r.lrange(f"historical:daily:{symbol}:low", 0, -1)
+
+                # fallback to closes if high/low missing
+                if not highs: highs = closes
+                if not lows: lows = closes
+
+                df = pd.DataFrame({
+                    "close": pd.to_numeric(closes),
+                    "volume": pd.to_numeric(volumes),
+                    "high": pd.to_numeric(highs),
+                    "low": pd.to_numeric(lows),
+                })
+                return df
+
+            return pd.DataFrame()
         except Exception as e:
-            print(f"[SWING] Error fetching daily data for {symbol}: {e}")
+            print(f"[SWING] Error reading daily data for {symbol} from Redis: {e}")
             return None
 
     def _calculate_swing_quantity(self, entry: float, stop: float) -> int:
@@ -143,6 +153,7 @@ class SwingEngine:
                 f"risk=₹{risk_value:,.2f} ({risk_pct:+.2f}%)",
                 f"expP=₹{profit_value:,.2f} ({profit_pct:+.2f}%)",
             )
+            print(f"[SWING] ACTION REQUIRED: MTF Pledge authorization needed for {signal['symbol']}.")
 
             # Send alert BEFORE placing order (per your requirement)
             if self.notifier is not None:
@@ -171,6 +182,10 @@ class SwingEngine:
                     quantity=qty,
                     price=entry,
                     segment=settings.SEGMENT_SWING,
+                    order_type="FOREVER", # Or OCO, to signify swing
+                    stop_loss=stop,
+                    take_profit=target,
+                    product_type="MTF"
                 )
                 if trade is None:
                     print(f"[SWING] {symbol}: trade blocked by risk/margin engine")

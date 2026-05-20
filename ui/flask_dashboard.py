@@ -165,19 +165,20 @@ def api_positions():
             return jsonify([])
 
         ltp_data = {}
-        if hasattr(engine, "kite") and engine.kite is not None:
-            try:
-                symbols = [f"NSE:{p.symbol}" for p in rows]
-                ltp_data = engine.kite.ltp(symbols)
-            except Exception as e:
-                print(f"[DASHBOARD] LTP fetch error: {e}")
-                ltp_data = {}
+        if hasattr(engine, "dhan") and engine.dhan is not None:
+            import redis
+            from config import settings
+            r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
+            for p in rows:
+                try:
+                    raw_data = r.hgetall(f"live_state:{p.symbol}")
+                    ltp_data[p.symbol] = float(raw_data.get("ltp", p.avg_price or 0.0)) if raw_data else (p.avg_price or 0.0)
+                except Exception as e:
+                    print(f"[DASHBOARD] Redis fetch error: {e}")
 
         result = []
         for p in rows:
-            ltp = float(
-                ltp_data.get(f"NSE:{p.symbol}", {}).get("last_price", p.avg_price or 0.0)
-            )
+            ltp = float(ltp_data.get(p.symbol, p.avg_price or 0.0))
             qty = int(p.quantity)
             avg = float(p.avg_price or 0.0)
             direction = "LONG" if qty > 0 else "SHORT"

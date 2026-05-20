@@ -2,7 +2,9 @@ from strategies.base_strategy import BaseStrategy, Signal
 import pandas as pd
 
 class VwapMomentumStrategy(BaseStrategy):
-    def generate_signal(self, symbol, df, current_position_qty, entry_price=None):
+    def generate_signal(self, symbol, df, current_position_qty, entry_price=None, **kwargs):
+        vwap_band_pct = kwargs.get("vwap_band_pct", 0.5)
+
         if len(df) < 20:
             return Signal("HOLD", reason="Not enough data")
         close = df["close"]; volume = df["volume"]
@@ -26,8 +28,15 @@ class VwapMomentumStrategy(BaseStrategy):
             return Signal("HOLD", reason="Holding short")
 
         # ── No position — check entries ────────────────────────────────
-        if price > vwap_v + atr_v * 0.5 and rsi_v > 55 and qty > 0:
-            return Signal("BUY", qty, f"Price above VWAP+ATR | RSI {rsi_v:.1f}")
-        if price < vwap_v - atr_v * 0.5 and rsi_v < 45 and qty > 0:
-            return Signal("SHORT", qty, f"Price below VWAP-ATR | RSI {rsi_v:.1f}")
+        avg_volume = volume.rolling(20).mean().iloc[-1]
+
+        up_band = vwap_v * (1 + (vwap_band_pct / 100))
+        down_band = vwap_v * (1 - (vwap_band_pct / 100))
+
+        if price > up_band and rsi_v < 30 and volume.iloc[-1] > avg_volume * 1.2 and qty > 0:
+            return Signal("BUY", qty, f"Price > VWAP+{vwap_band_pct}% | RSI < 30 | Vol surge")
+
+        if price < down_band and rsi_v > 70 and volume.iloc[-1] > avg_volume * 1.2 and qty > 0:
+            return Signal("SHORT", qty, f"Price < VWAP-{vwap_band_pct}% | RSI > 70 | Vol surge")
+
         return Signal("HOLD", reason="No setup")

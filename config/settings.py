@@ -26,15 +26,39 @@ SEGMENT_INTRADAY = "INTRADAY"
 SEGMENT_SWING    = "SWING"
 SEGMENT_LONGTERM = "LONGTERM"
 
-# Kite API
-KITE_API_KEY    = os.getenv("KITE_API_KEY",    "2kcgzxe407fpuvif")
-KITE_API_SECRET = os.getenv("KITE_API_SECRET", "15n1n3w5k3y70pvxayy7148q3dziawtc")
+# DhanHQ API
+DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID", "dummy_client_id")
+DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "dummy_access_token")
+
+# Redis
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_DB = int(os.getenv("REDIS_DB", 0))
+
+# PostgreSQL
+POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "trading_db")
 
 # ---------------------------------------------------------------------------
 # Trading Parameters
 # ---------------------------------------------------------------------------
 INITIAL_CAPITAL    = 100000   # Rs.1 Lakh starting capital
 PAPER_TRADING_MODE = True
+
+# Safe mode guardrail: If LIVE_TRADING_MODE is True, PAPER_TRADING_MODE MUST be False
+LIVE_TRADING_MODE = os.getenv("LIVE_TRADING_MODE", "False").lower() in ("true", "1", "yes")
+if LIVE_TRADING_MODE:
+    PAPER_TRADING_MODE = False
+
+MAX_DAILY_LOSS = int(os.getenv("MAX_DAILY_LOSS", 5000))
+
+# Segment Capital Allocation (Percentages must sum to <= 1.0)
+ALLOCATION_INTRADAY = 0.50
+ALLOCATION_SWING    = 0.30
+ALLOCATION_LONGTERM = 0.20
 
 # Intraday Trading
 # NOTE: INTRADAY_MARGIN_MULTIPLIER is kept ONLY for MAX_INTRADAY_EXPOSURE calc.
@@ -51,17 +75,15 @@ SQUARE_OFF_TIME = "15:15"
 POSITION_SIZE_CAPITAL_PCT: float = 0.25
 
 # Per-trade stop-risk as % of available capital (for risk-based sizing leg)
-POSITION_SIZE_PCT: int = 2          # 2% of capital at risk per trade
+POSITION_SIZE_PCT: float = 5.0      # Risk allocation per asset
 
 # Minimum notional value to bother placing an order
-MIN_POSITION_SIZE: float = 5000     # Rs.5K floor
+MIN_POSITION_SIZE: float = 500      # Minimum INR notional required to trade
 
 # Max concurrent open positions
 MAX_CONCURRENT_POSITIONS: int = 10
 
-# REMOVED: MAX_POSITION_VALUE = 25000
-# Reason: replaced by POSITION_SIZE_CAPITAL_PCT x per-symbol leverage so sizing
-# scales automatically with capital growth/drawdown and real broker margin rates.
+MAX_POSITION_VALUE: float = 25000   # Max INR notional per position
 
 # ---------------------------------------------------------------------------
 # Swing Trading
@@ -89,7 +111,7 @@ LONGTERM_NOTIFICATIONS_ENABLED     = True
 # Risk Management
 # ---------------------------------------------------------------------------
 STOP_LOSS_PCT                 = 1.5
-STOP_LOSS_ATR_MULTIPLIER      = 1.0
+STOP_LOSS_ATR_MULTIPLIER      = 1.5
 TAKE_PROFIT_ATR_MULTIPLIER    = 2.0
 TRAILING_STOP_ACTIVATION_PCT  = 1.0
 TRAILING_STOP_DISTANCE_PCT    = 0.5
@@ -97,11 +119,22 @@ TRAILING_STOP_DISTANCE_PCT    = 0.5
 # ---------------------------------------------------------------------------
 # Market Scanning
 # ---------------------------------------------------------------------------
+SCAN_INTERVAL_SECONDS = 60
+
 SCAN_ENTIRE_MARKET   = True
 MIN_STOCK_PRICE      = 10
 MAX_STOCK_PRICE      = 50000
 MIN_VOLUME           = 100000
 MIN_LIQUIDITY_CRORE  = 1
+
+# ---------------------------------------------------------------------------
+# Regime Detection / Strategy Thresholds (PRI-10 / PRI-12)
+# ---------------------------------------------------------------------------
+REGIME_MIN_CANDLES         = 10   # Reduced from 20 to classify earlier in session
+REGIME_TREND_STRENGTH_MIN  = 0.8  # Reduced from 1.0 to capture subtle emerging trends
+REGIME_VOLATILITY_PCT_MIN  = 2.0  # Reduced from 3.0 to acknowledge volatile Nifty environments
+REGIME_RSI_OVERSOLD        = 35   # Allow slight momentum buildup
+REGIME_RSI_OVERBOUGHT      = 65
 
 # ---------------------------------------------------------------------------
 # Indicators

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Institutional Trading Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            500: '#3b82f6',
+                            900: '#1e3a8a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .grid-card {
+            @apply bg-gray-800 rounded-lg p-6 border border-gray-700 shadow-lg;
+        }
+        .stat-value {
+            @apply text-2xl font-bold text-white tracking-tight;
+        }
+        .stat-label {
+            @apply text-sm font-medium text-gray-400 uppercase tracking-wider mb-1;
+        }
+        .status-dot {
+            @apply h-3 w-3 rounded-full inline-block mr-2 animate-pulse;
+        }
+        .status-dot.green { @apply bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]; }
+        .status-dot.red { @apply bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-6 font-sans antialiased">
+
+    <div class="max-w-7xl mx-auto space-y-6">
+        <!-- Header -->
+        <header class="flex justify-between items-center pb-4 border-b border-gray-800">
+            <div>
+                <h1 class="text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
+                    <span class="status-dot green" id="connStatusDot"></span>
+                    Nexus Multi-Strat Engine
+                </h1>
+                <p class="text-gray-400 mt-1 text-sm">Real-Time Telemetry & Execution State</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <div class="text-right">
+                    <p class="text-sm text-gray-400">Environment</p>
+                    <p class="font-semibold text-brand-500" id="liveModeLabel">CONNECTING...</p>
+                </div>
+                <div class="h-10 w-px bg-gray-800"></div>
+                <div class="text-right">
+                    <p class="text-sm text-gray-400">Macro Regime</p>
+                    <p class="font-semibold text-yellow-400" id="macroRegimeLabel">--</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- System Health Bar -->
+        <div class="grid grid-cols-4 gap-4 py-2">
+            <div class="flex items-center justify-between bg-gray-800/50 rounded px-4 py-2 border border-gray-800">
+                <span class="text-sm text-gray-400">Dhan Gateway</span>
+                <span class="text-sm font-medium text-green-400" id="dhanHealth">OK</span>
+            </div>
+            <div class="flex items-center justify-between bg-gray-800/50 rounded px-4 py-2 border border-gray-800">
+                <span class="text-sm text-gray-400">Redis Cache</span>
+                <span class="text-sm font-medium text-green-400" id="redisHealth">OK</span>
+            </div>
+            <div class="flex items-center justify-between bg-gray-800/50 rounded px-4 py-2 border border-gray-800">
+                <span class="text-sm text-gray-400">DB Persistence</span>
+                <span class="text-sm font-medium text-green-400" id="dbHealth">OK</span>
+            </div>
+            <div class="flex items-center justify-between bg-gray-800/50 rounded px-4 py-2 border border-gray-800">
+                <span class="text-sm text-gray-400">MTF Warnings</span>
+                <span class="text-sm font-medium text-red-400" id="mtfWarnings">0</span>
+            </div>
+        </div>
+
+        <!-- Strategy Modules Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+            <!-- Intraday Engine -->
+            <div class="grid-card border-t-4 border-t-blue-500">
+                <div class="flex justify-between items-start mb-6">
+                    <h2 class="text-xl font-bold text-white">Intraday Engine</h2>
+                    <span class="px-2 py-1 text-xs font-semibold bg-blue-500/10 text-blue-400 rounded">ACTIVE</span>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <p class="stat-label">Active Positions</p>
+                        <p class="stat-value" id="intraPositions">0</p>
+                    </div>
+                    <div>
+                        <p class="stat-label">Realized P&L</p>
+                        <p class="stat-value text-green-400" id="intraRealized">₹ 0.00</p>
+                    </div>
+                    <div>
+                        <p class="stat-label">Open MTM</p>
+                        <p class="stat-value text-gray-300" id="intraMTM">₹ 0.00</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Swing Engine -->
+            <div class="grid-card border-t-4 border-t-purple-500">
+                <div class="flex justify-between items-start mb-6">
+                    <h2 class="text-xl font-bold text-white">Swing Engine</h2>
+                    <span class="px-2 py-1 text-xs font-semibold bg-purple-500/10 text-purple-400 rounded">ACTIVE</span>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <p class="stat-label">Active Exposure</p>
+                        <p class="stat-value" id="swingExposure">₹ 0.00</p>
+                    </div>
+                    <div>
+                        <p class="stat-label">MTF Margin Utilized</p>
+                        <p class="stat-value text-yellow-400" id="swingMargin">₹ 0.00</p>
+                    </div>
+                    <div>
+                        <p class="stat-label">SL Violation Dist.</p>
+                        <p class="stat-value text-gray-300" id="swingSL">--</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Long-Term Allocator -->
+            <div class="grid-card border-t-4 border-t-emerald-500">
+                <div class="flex justify-between items-start mb-6">
+                    <h2 class="text-xl font-bold text-white">Long-Term</h2>
+                    <span class="px-2 py-1 text-xs font-semibold bg-emerald-500/10 text-emerald-400 rounded">IDLE</span>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <p class="stat-label">Equity Assets</p>
+                        <p class="stat-value" id="ltAssets">0</p>
+                    </div>
+                    <div>
+                        <p class="stat-label">Capital Allocated</p>
+                        <p class="stat-value text-emerald-400" id="ltCapital">₹ 0.00</p>
+                    </div>
+                    <div>
+                        <p class="stat-label">Momentum Ranking</p>
+                        <p class="stat-value text-gray-300" id="ltRanking">--</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const formatCurrency = (val) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(val);
+
+        const connectWebSocket = () => {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsProtocol}//${window.location.host}/ws/live_telemetry`;
+            const ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                document.getElementById('connStatusDot').className = 'status-dot green';
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.error) {
+                    console.error("Telemetry Error:", data.error);
+                    return;
+                }
+
+                // Header
+                document.getElementById('liveModeLabel').innerText = data.health.live_mode ? "LIVE TRADING" : "PAPER TRADING";
+                document.getElementById('liveModeLabel').className = data.health.live_mode ? "font-semibold text-red-500" : "font-semibold text-blue-500";
+                document.getElementById('macroRegimeLabel').innerText = data.health.macro_regime;
+
+                // Health
+                document.getElementById('dhanHealth').innerText = data.health.dhan_gateway ? "OK" : "DOWN";
+                document.getElementById('dhanHealth').className = data.health.dhan_gateway ? "text-sm font-medium text-green-400" : "text-sm font-medium text-red-500";
+
+                document.getElementById('redisHealth').innerText = data.health.redis_engine ? "OK" : "DOWN";
+                document.getElementById('redisHealth').className = data.health.redis_engine ? "text-sm font-medium text-green-400" : "text-sm font-medium text-red-500";
+
+                document.getElementById('mtfWarnings').innerText = data.risk.mtf_warnings;
+                document.getElementById('mtfWarnings').className = data.risk.mtf_warnings > 0 ? "text-sm font-medium text-red-500 animate-pulse" : "text-sm font-medium text-gray-400";
+
+                // Intraday
+                document.getElementById('intraPositions').innerText = data.intraday.active_positions;
+                document.getElementById('intraRealized').innerText = formatCurrency(data.intraday.cumulative_pnl);
+                document.getElementById('intraRealized').className = data.intraday.cumulative_pnl >= 0 ? "stat-value text-green-400" : "stat-value text-red-400";
+                document.getElementById('intraMTM').innerText = formatCurrency(data.intraday.open_mtm);
+
+                // Swing
+                document.getElementById('swingExposure').innerText = formatCurrency(data.swing.active_exposure);
+                document.getElementById('swingMargin').innerText = formatCurrency(data.swing.mtf_margin_utilized);
+                document.getElementById('swingSL').innerText = `${(data.swing.sl_violation_dist || 0).toFixed(2)}% avg`;
+
+                // Long Term
+                document.getElementById('ltAssets').innerText = data.long_term.equity_assets;
+                document.getElementById('ltCapital').innerText = formatCurrency(data.long_term.capital_allocated);
+                document.getElementById('ltRanking').innerText = data.long_term.momentum_ranking;
+            };
+
+            ws.onclose = () => {
+                document.getElementById('connStatusDot').className = 'status-dot red';
+                setTimeout(connectWebSocket, 5000); // Auto-reconnect
+            };
+        };
+
+        connectWebSocket();
+    </script>
+</body>
+</html>

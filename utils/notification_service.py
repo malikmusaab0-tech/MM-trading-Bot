@@ -28,9 +28,11 @@ class NotificationService:
         try:
             resp = requests.post(url, json=payload, timeout=5)
             if not resp.ok:
-                print(f"[NOTIFY] Telegram failed: {resp.status_code} {resp.text}")
+                print(f"[NOTIFY FAILED] HTTP {resp.status_code}: {resp.text}")
+        except requests.exceptions.Timeout:
+            print("[NOTIFY FAILED] Telegram API connection timed out.")
         except Exception as e:
-            print(f"[NOTIFY] Telegram exception: {e}")
+            print(f"[NOTIFY FAILED] Unexpected error: {e}")
 
     # ---------- Generic text ----------
 
