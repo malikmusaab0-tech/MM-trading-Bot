@@ -1,7 +1,8 @@
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, DateTime, Boolean, Index
+    create_engine, Column, Integer, String, Float, DateTime, Boolean, Index, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, synonym
+from sqlalchemy.dialects.postgresql import JSONB
 from datetime import datetime
 from config.settings import DATABASE_PATH, SEGMENT_INTRADAY, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
 
@@ -87,6 +88,27 @@ class HistoricalData(Base):
     __table_args__ = (
         Index('ix_historical_data_symbol_timestamp', 'symbol', 'timestamp'),
     )
+
+class PortfolioHoldings(Base):
+    __tablename__ = "portfolio_holdings"
+
+    symbol = Column(String, primary_key=True, index=True)
+    average_buy_price = Column(Float)
+    total_quantity = Column(Integer)
+    execution_mode = Column(String)
+
+class SystemAudit(Base):
+    __tablename__ = "system_audit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    payload = Column(JSONB)
+
+class BotState(Base):
+    __tablename__ = "bot_state"
+
+    key = Column(String, primary_key=True, index=True)
+    value = Column(JSONB)
 
 class Fundamentals(Base):
     __tablename__ = "fundamentals"
