@@ -12,7 +12,7 @@ import pandas as pd
 from dhanhq import dhanhq
 
 from config import settings
-from strategies.swing_strategy import SwingStrategy
+from strategies.swing_trend_pullback import SwingTrendPullbackStrategy
 from utils.paper_trading import PaperTradingEngine
 from utils.notification_service import NotificationService
 
@@ -40,7 +40,7 @@ class SwingEngine:
         self.dhan = dhan
         self.engine = trading_engine
         self.symbols = symbols
-        self.strategy = SwingStrategy()
+        self.strategy = SwingTrendPullbackStrategy()
         self.notifier = notifier
         from utils.dhan_helper import dhan_helper
         self.dhan_helper = dhan_helper
@@ -118,36 +118,19 @@ class SwingEngine:
 
         print("[SWING] Running swing scan...")
         for symbol in self.symbols:
-            df_daily = self.fetch_daily_ohlc(symbol)
-            if df_daily is None or df_daily.empty:
-                print(f"[SWING] {symbol}: no daily data")
+            df = self.fetch_daily_ohlc(symbol)
+            if df is None or df.empty:
+                print(f"[SWING] {symbol}: no data")
                 continue
 
-            # In a full implementation, you'd fetch weekly data too.
-            # We pass df_daily downsampled as a quick mock, but strategy handles df_weekly=None safely.
-            df_weekly = df_daily.resample('W').last() if not df_daily.index.empty and isinstance(df_daily.index, pd.DatetimeIndex) else None
-
-            from ml.regime_classifier import classifier
-            # Here we need macro regime. We use NIFTY's regime.
-            # For brevity in this fix, we'll assume it's set by main loop or default to NEUTRAL
-            macro_regime = "NEUTRAL"
-            if classifier.current_regime_info:
-                # Map GMM label to macro string
-                label = classifier.current_regime_info.get("label", "").upper()
-                if "TREND" in label or "MOMENTUM" in label:
-                    macro_regime = "TRENDING"
-
-            signal = self.strategy.generate_signal(symbol, df_daily, current_position_qty=0, df_weekly=df_weekly, macro_regime=macro_regime)
-
-            if not signal or signal.action == "HOLD":
+            signal = self.strategy.generate_signal(symbol, df)
+            if not signal:
                 continue
 
-            entry = df_daily["close"].iloc[-1]
-            atr = self.strategy.atr(df_daily).iloc[-1]
-            stop = entry - (atr * 2.5)
-            target = entry + (atr * 5.0)
-
-            qty = signal.quantity if signal.quantity else self._calculate_swing_quantity(entry, stop)
+            entry = float(signal["entry"])
+            stop = float(signal["stop_loss"])
+            target = float(signal["target"])
+            qty = self._calculate_swing_quantity(entry, stop)
             if qty <= 0:
                 print(f"[SWING] {symbol}: signal found but size=0 (risk too small/large)")
                 continue
@@ -161,29 +144,29 @@ class SwingEngine:
 
             print(
                 "[SWING] Executing:",
-                f"{settings.SEGMENT_SWING} {signal.action} {symbol}",
+                f"{signal['segment']} {signal['side']} {signal['symbol']}",
                 f"qty={qty}",
                 f"entry={entry:.2f}",
                 f"sl={stop:.2f}",
                 f"target={target:.2f}",
-                f"timeframe=Daily",
+                f"timeframe={signal['timeframe']}",
                 f"risk=₹{risk_value:,.2f} ({risk_pct:+.2f}%)",
                 f"expP=₹{profit_value:,.2f} ({profit_pct:+.2f}%)",
             )
-            print(f"[SWING] ACTION REQUIRED: MTF Pledge authorization needed for {symbol}.")
+            print(f"[SWING] ACTION REQUIRED: MTF Pledge authorization needed for {signal['symbol']}.")
 
             # Send alert BEFORE placing order (per your requirement)
             if self.notifier is not None:
                 try:
                     self.notifier.send_swing_trade_alert(
                         segment=settings.SEGMENT_SWING,
-                        symbol=symbol,
-                        side=signal.action,
+                        symbol=signal["symbol"],
+                        side=signal["side"],
                         qty=qty,
                         entry=entry,
                         stop_loss=stop,
                         target=target,
-                        timeframe="Daily",
+                        timeframe=signal["timeframe"],
                         risk_value=risk_value,
                         risk_pct=risk_pct,
                         profit_value=profit_value,
@@ -193,9 +176,9 @@ class SwingEngine:
                     print(f"[SWING] Notification error for {symbol}: {e}")
 
             # Place paper BUY as swing trade
-            if signal.action == "BUY":
+            if signal["side"] == "BUY":
                 trade = self.engine.buy(
-                    symbol=symbol,
+                    symbol=signal["symbol"],
                     quantity=qty,
                     price=entry,
                     segment=settings.SEGMENT_SWING,
