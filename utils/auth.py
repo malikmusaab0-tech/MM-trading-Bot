@@ -9,14 +9,13 @@ TOKEN_PATH = settings.BASE_DIR / "token.json"
 def get_dhan_client(access_token: str | None = None) -> dhanhq:
     """Returns an authenticated DhanHQ client instance."""
     from utils.rate_limiter import retry_with_backoff
+    from dhanhq import DhanContext
     client_id = settings.DHAN_CLIENT_ID
     # Use provided access token or fallback to settings
     token = access_token if access_token else settings.DHAN_ACCESS_TOKEN
 
-    dhan = dhanhq(
-        client_id=client_id,
-        access_token=token
-    )
+    ctx = DhanContext(client_id=client_id, access_token=token)
+    dhan = dhanhq(ctx)
 
     # Wrap dhan API calls that are prone to rate limits with retry backoff logic
     if hasattr(dhan, 'get_positions'):
