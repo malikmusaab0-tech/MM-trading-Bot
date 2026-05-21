@@ -19,7 +19,7 @@ from utils.risk_manager import RiskManager
 from utils.pattern_recognizer import PatternRecognizer
 from utils.swing_engine import SwingEngine
 from utils.notification_service import NotificationService
-from utils.longterm_engine import LongTermEngine
+
 
 from strategies.vwap_momentum import VwapMomentumStrategy
 from strategies.ema_crossover import EmaCrossoverStrategy
@@ -30,6 +30,9 @@ from strategies.macd_momentum import MacdMomentumStrategy
 from strategies.volume_breakout import VolumeBreakoutStrategy
 from strategies.atr_breakout import AtrBreakoutStrategy
 from strategies.base_strategy import Signal
+
+from ml.regime_classifier import classifier
+from ml.redis_inference import get_regime_for_symbol
 
 
 # ── Logging (Windows CP1252 safe) ─────────────────────────────────────────────
@@ -77,33 +80,28 @@ def write_scan_state(state: dict):
 
 
 def fetch_candles(
-    dhan: dhanhq, symbol: str, interval: str = None
+    dhan: dhanhq, symbol: str, redis_client, interval: str = None
 ) -> pd.DataFrame:
-    import redis
-    r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
-
     # We refactored to use Redis lists directly
-    closes = r.lrange(f"historical:5min:{symbol}:close", 0, -1)
-    volumes = r.lrange(f"historical:5min:{symbol}:volume", 0, -1)
+    closes = redis_client.lrange(f"historical:5min:{symbol}:close", 0, -1)
+    volumes = redis_client.lrange(f"historical:5min:{symbol}:volume", 0, -1)
 
     if closes and volumes:
-        # Since we just have close and volume right now to satisfy simple models, we use those.
-        # But strategies also use open/high/low in ATR.
-        # We didn't warm high/low/open. Let's return just close/vol and emulate ATR using close diffs if needed,
-        # or we should probably update warm_data to include high/low for correct ATR.
-        # Assuming we update warm_data to also store high/low in a minute... Let's read them.
-        highs = r.lrange(f"historical:5min:{symbol}:high", 0, -1)
-        lows = r.lrange(f"historical:5min:{symbol}:low", 0, -1)
+        highs = redis_client.lrange(f"historical:5min:{symbol}:high", 0, -1)
+        lows = redis_client.lrange(f"historical:5min:{symbol}:low", 0, -1)
+        opens = redis_client.lrange(f"historical:5min:{symbol}:open", 0, -1)
 
         # fallback to closes if high/low missing
         if not highs: highs = closes
         if not lows: lows = closes
+        if not opens: opens = closes
 
         df = pd.DataFrame({
-            "close": pd.to_numeric(closes),
-            "volume": pd.to_numeric(volumes),
+            "open": pd.to_numeric(opens),
             "high": pd.to_numeric(highs),
             "low": pd.to_numeric(lows),
+            "close": pd.to_numeric(closes),
+            "volume": pd.to_numeric(volumes),
         })
         return df
 
@@ -223,6 +221,9 @@ def main():
     from utils.websocket_listener import start_websocket
     ws_thread = threading.Thread(target=start_websocket, daemon=True)
     ws_thread.start()
+
+    import redis
+    redis_client = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
 
     init_db()
 
@@ -390,16 +391,13 @@ def main():
             logger.info(f"Found {len(opportunities)} opportunities")
 
             # ── Manage existing open positions ───────────────────────────────
-            import redis
-            r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
-
             with get_session() as session:
                 for pos in (
                     session.query(Position)
                     .filter(Position.quantity != 0)
                     .all()
                 ):
-                    raw_data = r.hgetall(f"live_state:{pos.symbol}")
+                    raw_data = redis_client.hgetall(f"live_state:{pos.symbol}")
                     if not raw_data:
                         continue
                     current_price = float(raw_data.get("ltp", 0))
@@ -432,9 +430,11 @@ def main():
                 logger.info(f"--- {symbol} ---")
                 time.sleep(0.3)
 
-                df = fetch_candles(dhan, symbol)
+                df = fetch_candles(dhan, symbol, redis_client)
                 if df.empty:
                     continue
+
+                regime_kwargs = get_regime_for_symbol(redis_client, symbol, df) or {}
 
                 strategy_name, market_info = selector.select_strategy(symbol, df)
                 if strategy_name == "HOLD":
@@ -483,6 +483,7 @@ def main():
                     df=df,
                     current_position_qty=current_qty,
                     entry_price=entry_price,
+                    **regime_kwargs
                 )
                 logger.info(f"{symbol} -> {signal.action}: {signal.reason}")
 
@@ -506,7 +507,7 @@ def main():
                     }
                 )
 
-                raw_data = r.hgetall(f"live_state:{symbol}")
+                raw_data = redis_client.hgetall(f"live_state:{symbol}")
                 current_price = float(raw_data.get("ltp", 0)) if raw_data else opp["ltp"]
                 atr = get_atr(df, current_price)
 
@@ -517,6 +518,13 @@ def main():
                     logger.info(f"[{signal.action} VETO] {symbol} blocked: {open_reason}")
 
                 # ── BUY — long entry ─────────────────────────────────────────
+                if getattr(settings, "ENABLE_PATTERN_RECOGNITION", False):
+                    pattern_action, _ = pattern_rec.analyze(df)
+                    if signal.action == "BUY" and pattern_action == "BEARISH":
+                        signal = Signal("HOLD", reason="Vetoed: Bearish pattern detected")
+                    elif signal.action == "SHORT" and pattern_action == "BULLISH":
+                        signal = Signal("HOLD", reason="Vetoed: Bullish pattern detected")
+
                 if signal.action == "BUY" and current_qty == 0 and can_open:
                     qty = risk_manager.calculate_position_size(
                         symbol, current_price, atr, engine.cash

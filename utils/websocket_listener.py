@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 client_id = settings.DHAN_CLIENT_ID
 access_token = load_access_token()
 
-r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB)
+r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB, decode_responses=True)
 
 instruments = []
 from utils.nifty_100_symbols import NIFTY_100_SYMBOLS
@@ -41,6 +41,12 @@ async def fetch_and_process_loop(ws):
                     }
                     if 'volume' in data:
                          state['volume'] = data['volume']
+                    if 'open' in data:
+                         state['open'] = data['open']
+                    if 'high' in data:
+                         state['high'] = data['high']
+                    if 'low' in data:
+                         state['low'] = data['low']
 
                     r.hset(f"live_state:{symbol}", mapping=state)
         except Exception as e:

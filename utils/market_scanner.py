@@ -29,6 +29,7 @@ class MarketScanner:
         from utils.dhan_helper import dhan_helper
         self.dhan_helper = dhan_helper
         self.instruments = list(self.dhan_helper.symbol_to_id.keys())
+        self._liquid_stocks = None
         logger.info(f"Loaded {len(self.instruments)} NSE equity instruments from helper")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -43,6 +44,8 @@ class MarketScanner:
         Get liquid NSE stocks by scanning the Nifty 100 instruments and filtering
         using daily historical data from Dhan.
         """
+        if self._liquid_stocks is not None:
+            return self._liquid_stocks
         try:
             from utils.rate_limiter import retry_with_backoff
             from datetime import datetime, timedelta
@@ -86,11 +89,13 @@ class MarketScanner:
                 time.sleep(0.1) # Small delay to respect rate limit while looping
 
             logger.info(f"Found {len(liquid)} liquid Nifty 100 stocks")
-            return liquid if liquid else self.instruments
+            self._liquid_stocks = liquid if liquid else self.instruments
+            return self._liquid_stocks
 
         except Exception as e:
             logger.error(f"Error in get_liquid_stocks: {e}")
-            return self.instruments
+            self._liquid_stocks = self.instruments
+            return self._liquid_stocks
 
     # ─────────────────────────────────────────────────────────────────────────
     # Main scan — FULLY BATCHED, zero per-symbol API calls
@@ -121,14 +126,6 @@ class MarketScanner:
                 volume = float(raw_data.get("volume", 0))
 
                 # We need OHLC data to perform the custom logic
-                # Since we don't have full OHLC in websocket, we will just use
-                # whatever we have, or fallback. If we stored previous day data
-                # we could use it, but for now we will restore the logic structure
-                # and assume open/high/low are either from websocket (if supported) or
-                # cached from a daily fetch. We'll use dummy values for OHLC if not present
-                # to satisfy the structure without crashing, and if they become available
-                # in the future via Redis, the logic will immediately work.
-
                 day_open = float(raw_data.get("open", ltp))
                 day_high = float(raw_data.get("high", ltp))
                 day_low = float(raw_data.get("low", ltp))

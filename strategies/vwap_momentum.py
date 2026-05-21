@@ -17,13 +17,13 @@ class VwapMomentumStrategy(BaseStrategy):
 
         # ── Manage existing LONG ───────────────────────────────────────
         if current_position_qty > 0:
-            if price < vwap_v or rsi_v > 70:
+            if price < vwap_v or rsi_v < 50:
                 return Signal("SELL", current_position_qty, "VWAP momentum faded")
             return Signal("HOLD", reason="Holding long")
 
         # ── Manage existing SHORT ──────────────────────────────────────
         if current_position_qty < 0:
-            if price > vwap_v or rsi_v < 30:
+            if price > vwap_v or rsi_v > 50:
                 return Signal("COVER", abs(current_position_qty), "Short momentum faded")
             return Signal("HOLD", reason="Holding short")
 
@@ -33,10 +33,10 @@ class VwapMomentumStrategy(BaseStrategy):
         up_band = vwap_v * (1 + (vwap_band_pct / 100))
         down_band = vwap_v * (1 - (vwap_band_pct / 100))
 
-        if price > up_band and rsi_v < 30 and volume.iloc[-1] > avg_volume * 1.2 and qty > 0:
+        if price > up_band and rsi_v > 50 and volume.iloc[-1] > avg_volume * 1.2 and qty > 0:
             return Signal("BUY", qty, f"Price > VWAP+{vwap_band_pct}% | RSI < 30 | Vol surge")
 
-        if price < down_band and rsi_v > 70 and volume.iloc[-1] > avg_volume * 1.2 and qty > 0:
+        if price < down_band and rsi_v < 50 and volume.iloc[-1] > avg_volume * 1.2 and qty > 0:
             return Signal("SHORT", qty, f"Price < VWAP-{vwap_band_pct}% | RSI > 70 | Vol surge")
 
         return Signal("HOLD", reason="No setup")
