@@ -93,6 +93,7 @@ SWING_TIMEFRAME            = "day"
 SWING_MAX_POSITIONS        = 5
 SWING_MAX_RISK_PER_TRADE_PCT = 1
 SWING_MAX_TOTAL_RISK_PCT   = 5
+SWING_NOTIFICATIONS_ENABLED = True
 
 # ---------------------------------------------------------------------------
 # Long-Term Investing Segment
@@ -121,7 +122,7 @@ TRAILING_STOP_DISTANCE_PCT    = 0.5
 # ---------------------------------------------------------------------------
 SCAN_INTERVAL_SECONDS = 60
 
-SCAN_ENTIRE_MARKET   = True
+SCAN_ENTIRE_MARKET   = False
 MIN_STOCK_PRICE      = 10
 MAX_STOCK_PRICE      = 50000
 MIN_VOLUME           = 100000

@@ -7,3 +7,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 ml/models/
+
+.env
+token.json
+scan_state.json
+weights.json

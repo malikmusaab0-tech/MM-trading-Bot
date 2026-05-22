@@ -59,7 +59,7 @@ class InvestingEngine:
         logger.info(f"[INVESTING] Top {len(top_stocks)} stocks selected.")
 
         # Calculate allocation per stock
-        investing_capital = self.engine.cash * (settings.LONGTERM_MAX_RISK_PER_TRADE_PCT * 10 / 100) # Or define a specific allocation
+        # removed investing_capital
         # Simple allocation: equal weight of 10% total capital per stock
         allocation_per_stock = self.engine.cash * 0.10
 

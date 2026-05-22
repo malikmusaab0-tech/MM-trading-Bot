@@ -14,6 +14,7 @@ class PaperTradingEngine:
     def __init__(self, dhan=None):
         self.dhan = dhan
         self.cash = float(settings.INITIAL_CAPITAL)
+        self.max_loss = getattr(settings, 'MAX_DAILY_LOSS', 5000)
         self._load_existing_state()
 
     def _load_existing_state(self):
@@ -56,7 +57,22 @@ class PaperTradingEngine:
                 f"MIS limit {mis_limit:,.0f}"
             )
             return False
+
+        todays_pnl = self._get_todays_realized_pnl(session)
+        if todays_pnl <= -self.max_loss:
+            print(f"[REJECT] Max daily loss ({self.max_loss}) hit. PNL: {todays_pnl:.2f}")
+            return False
+
         return True
+
+    def _get_todays_realized_pnl(self, session) -> float:
+        from datetime import date
+        today = date.today()
+        trades = session.query(Trade).filter(
+            Trade.timestamp >= today,
+            Trade.side.in_(["SELL", "COVER"])
+        ).all()
+        return sum(float(t.pnl or 0.0) for t in trades)
 
     # ------------------------------------------------------------------ #
     # NOTE: segment is optional; defaults to INTRADAY if not provided.
